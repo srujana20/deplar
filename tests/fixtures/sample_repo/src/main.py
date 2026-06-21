@@ -1,2 +1,2 @@
 import requests
-from . import utils
+from .. import utils
