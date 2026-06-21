@@ -1,0 +1,98 @@
+{
+  "version": "1.0",
+  "dependencies": [
+    {
+      "from": "deplar",
+      "to": "paymentsclient",
+      "types": [
+        "import"
+      ],
+      "confidence": 0.6,
+      "evidence": [
+        "OrderService.java:1"
+      ]
+    },
+    {
+      "from": "deplar",
+      "to": "userservice",
+      "types": [
+        "import"
+      ],
+      "confidence": 0.6,
+      "evidence": [
+        "OrderService.java:2"
+      ]
+    },
+    {
+      "from": "deplar",
+      "to": "payments-service",
+      "types": [
+        "feign",
+        "http"
+      ],
+      "confidence": 1.0,
+      "evidence": [
+        "OrderService.java:4",
+        "payments_client.py:9"
+      ]
+    },
+    {
+      "from": "deplar",
+      "to": "orders.created",
+      "types": [
+        "kafka"
+      ],
+      "confidence": 1.0,
+      "evidence": [
+        "events.py:6"
+      ]
+    },
+    {
+      "from": "deplar",
+      "to": "orders.failed",
+      "types": [
+        "kafka"
+      ],
+      "confidence": 1.0,
+      "evidence": [
+        "events.py:7"
+      ]
+    },
+    {
+      "from": "deplar",
+      "to": "f\"{url}",
+      "types": [
+        "http"
+      ],
+      "confidence": 0.4,
+      "evidence": [
+        "payments_client.py:15"
+      ]
+    },
+    {
+      "from": "deplar",
+      "to": "f\"{base}",
+      "types": [
+        "http"
+      ],
+      "confidence": 0.4,
+      "evidence": [
+        "payments_client.py:21"
+      ]
+    }
+  ],
+  "summary": {
+    "total_nodes": 8,
+    "total_edges": 7,
+    "most_depended_on": [
+      "paymentsclient",
+      "userservice",
+      "payments-service",
+      "orders.created",
+      "orders.failed"
+    ],
+    "orphans": [
+      "deplar"
+    ]
+  }
+}

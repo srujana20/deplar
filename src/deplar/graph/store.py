@@ -1,0 +1,78 @@
+import json
+from pathlib import Path
+from dataclasses import dataclass, asdict
+from typing import List, Set
+import networkx as nx
+from deplar.scanner.resolver import DependencyEdge
+
+
+class DependencyGraph:
+    def __init__(self):
+        self.g = nx.DiGraph()
+
+    def add_dependency(self, edge: DependencyEdge):
+        self.g.add_edge(
+            edge.from_repo,
+            edge.to_repo,
+            dep_types=edge.dep_types,
+            confidence=edge.confidence,
+            evidence=edge.evidence,
+        )
+
+    def get_dependencies(self, repo: str) -> List[str]:
+        return list(self.g.successors(repo))
+
+    def get_dependents(self, repo: str) -> List[str]:
+        return list(self.g.predecessors(repo))
+
+    def blast_radius(self, repo: str, depth: int = 2) -> Set[str]:
+        visited = set()
+        frontier = {repo}
+        for _ in range(depth):
+            next_frontier = set()
+            for node in frontier:
+                for dep in self.g.predecessors(node):
+                    if dep not in visited:
+                        next_frontier.add(dep)
+            visited |= frontier
+            frontier = next_frontier
+        visited.discard(repo)
+        return visited
+
+    def summary(self) -> dict:
+        in_degree = sorted(self.g.in_degree(), key=lambda x: x[1], reverse=True)
+        return {
+            "total_nodes": self.g.number_of_nodes(),
+            "total_edges": self.g.number_of_edges(),
+            "most_depended_on": [n for n, _ in in_degree[:5]],
+            "orphans": [n for n, d in self.g.in_degree() if d == 0],
+        }
+
+    def to_dict(self) -> dict:
+        deps = []
+        for u, v, data in self.g.edges(data=True):
+            deps.append({
+                "from": u, "to": v,
+                "types": data.get("dep_types", []),
+                "confidence": data.get("confidence", 0.0),
+                "evidence": data.get("evidence", []),
+            })
+        return {
+            "version": "1.0",
+            "dependencies": deps,
+            "summary": self.summary(),
+        }
+
+    def save(self, path: Path):
+        path = Path(path)
+        path.write_text(json.dumps(self.to_dict(), indent=2))
+
+    def load(self, path: Path):
+        data = json.loads(Path(path).read_text())
+        for dep in data["dependencies"]:
+            self.g.add_edge(
+                dep["from"], dep["to"],
+                dep_types=dep["types"],
+                confidence=dep["confidence"],
+                evidence=dep["evidence"],
+            )
