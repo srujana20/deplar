@@ -1,12 +1,13 @@
 from pathlib import Path
-from deplar.scanner.org_scanner import OrgScanner, OrgConfig, RepoConfig
+
+from deplar.scanner.org_scanner import OrgConfig, OrgScanner
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def test_org_config_from_yaml():
     config = OrgConfig.from_yaml(FIXTURES / "deplar.yaml")
-    assert len(config.repos) == 2
+    assert len(config.repos) == 3
     assert config.repos[0].name == "order-service"
 
 

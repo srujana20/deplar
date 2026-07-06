@@ -1,4 +1,5 @@
 from pathlib import Path
+
 from deplar.scanner.network_detector import detect_python_network_calls
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_repo" / "src"

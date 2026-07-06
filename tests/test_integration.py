@@ -1,11 +1,11 @@
 from pathlib import Path
-from deplar.scanner.walker import RepoWalker
+
+from deplar.output.claude_md import ClaudeMdGenerator
 from deplar.scanner.ast_parser import ASTParser
 from deplar.scanner.network_detector import NetworkDetector
+from deplar.scanner.org_scanner import OrgConfig, OrgScanner
 from deplar.scanner.resolver import DependencyResolver
-from deplar.scanner.org_scanner import OrgScanner, OrgConfig
-from deplar.graph.store import DependencyGraph
-from deplar.output.claude_md import ClaudeMdGenerator
+from deplar.scanner.walker import RepoWalker
 
 FIXTURES = Path(__file__).parent / "fixtures"
 ORDER   = FIXTURES / "order-service"

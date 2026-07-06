@@ -1,7 +1,6 @@
-from pathlib import Path
 from deplar.graph.store import DependencyGraph
-from deplar.scanner.resolver import DependencyEdge
 from deplar.output.claude_md import ClaudeMdGenerator
+from deplar.scanner.resolver import DependencyEdge
 
 
 def _make_graph():

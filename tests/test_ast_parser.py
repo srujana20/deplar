@@ -1,8 +1,9 @@
 from pathlib import Path
+
 from deplar.scanner.ast_parser import (
-    parse_python_imports,
-    parse_java_imports,
     parse_feign_clients,
+    parse_java_imports,
+    parse_python_imports,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_repo" / "src"

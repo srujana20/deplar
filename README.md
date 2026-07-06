@@ -141,17 +141,115 @@ This writes a `CLAUDE.md` to the repo root:
 
 Claude Code reads `CLAUDE.md` automatically before acting in a codebase.
 
+### Query the knowledge graph
+
+Every scan populates a SQLite store (`deplar.db`) holding the dependency graph
+plus a symbol index (classes, methods, function signatures, and call sites with
+line numbers). Query it directly:
+
+```bash
+deplar query --dependents payments-service   # who calls it
+deplar query --calls order-service            # what it calls
+deplar query --blast payments-service         # transitive blast radius
+deplar query --symbols getUser                # find a symbol + signature + line
+deplar query --callers charge                 # every call site of a symbol
+```
+
+### Build a coordinated multi-repo workspace
+
+Given a repo, `deplar workspace` resolves every repo affected by changing it
+(the target plus its dependents) and checks each one out as a **git worktree**
+into a single directory — so an agent can make coordinated, parallel edits
+across all of them at once:
+
+```bash
+deplar scan-org ./services --config deplar.yaml   # record repo paths + graph
+deplar workspace payments-service --out ./ws --branch feature/new-charge-api
+
+#   deplar workspace for payments-service — 3 repo(s): payments-service, order-service, checkout-service
+#     ✓ payments-service → ./ws/payments-service   created: branch feature/new-charge-api
+#     ✓ order-service     → ./ws/order-service      created: branch feature/new-charge-api
+#     ✓ checkout-service  → ./ws/checkout-service   created: branch feature/new-charge-api
+```
+
+Flags: `--transitive` pulls the full blast radius (not just direct dependents),
+`--with-dependencies` also includes repos the target itself calls, and
+`--remove` tears the workspace back down.
+
+### Impact report — know before you touch
+
+Before editing, generate a structured report of everything a change would ripple
+into — dependents, transitive blast radius, emitted events, and cross-repo call
+sites of a specific symbol:
+
+```bash
+deplar impact payments-service --symbol charge          # markdown
+deplar impact payments-service --json -o impact.json    # machine-readable
+```
+
+### Validate a workspace after edits
+
+Re-run every repo's tests across a coordinated workspace (auto-detects pytest,
+npm, mvn/gradle, go test, or use `--test-cmd`):
+
+```bash
+deplar verify-workspace ./workspace
+```
+
+### Agent memory
+
+Persist patterns, conventions, and gotchas about a repo so they survive across
+sessions and flow into its CLAUDE.md / SKILL.md:
+
+```bash
+deplar remember payments-service "charge() is not idempotent — pass an idempotency key" --kind gotcha
+deplar recall payments-service
+```
+
+### Skillhub — reusable skills per repo
+
+Generate a Claude skill (SKILL.md) that distills how to work in a repo, versioned
+by a hash of the graph snapshot it came from:
+
+```bash
+deplar skill payments-service -o SKILL.md      # one repo
+deplar skillhub --out ./skillhub               # all repos + a browsable portal
+```
+
+`deplar skillhub` writes `<repo>/SKILL.md` per repo, an `index.json` registry,
+and a self-contained `index.html` portal (search by repo or language).
+
+### MCP server
+
+Expose the knowledge graph to agents over MCP:
+
+```bash
+deplar mcp --db deplar.db
+```
+
+Tools: `get_dependencies`, `get_dependents`, `blast_radius`, `search_symbols`,
+`get_callers`, `list_repos`, `affected_repos`, `impact_report`, `remember`,
+`recall`, `list_skills`, `get_skill`. Register it in Claude Code with:
+
+```json
+{ "mcpServers": { "deplar": { "command": "deplar", "args": ["mcp", "--db", "/abs/path/deplar.db", "--skills", "/abs/path/skillhub"] } } }
+```
+
 ---
 
 ## Language support
 
 | Language | Import parsing | HTTP detection | Annotations |
 |---|---|---|---|
-| Python | ✅ | ✅ | — |
+| Python | ✅ | ✅ (requests, httpx, urllib, aiohttp) | — |
 | Java | ✅ | ✅ | ✅ @FeignClient |
-| TypeScript | ✅ | ✅ | — |
-| JavaScript | ✅ | ✅ | — |
+| TypeScript | ✅ | ✅ (axios, fetch, got, ky) | — |
+| JavaScript | ✅ | ✅ (axios, fetch, got, ky) | — |
 | Go | 🔜 | 🔜 | — |
+
+Python HTTP detection follows variable assignments across a scope, so
+`URL = "https://payments-svc"; requests.post(f"{URL}/charge")` resolves to a
+high-confidence literal.
 
 ---
 
@@ -185,12 +283,21 @@ With deplar:
 - [x] Dependency graph with blast radius analysis
 - [x] CLI: `scan`, `map`, `diff`
 - [x] CLAUDE.md generator
-- [ ] Multi-repo org scan
-- [ ] MCP server — expose knowledge graph to agents
-- [ ] Per-repo knowledge graph (methods, classes, call sites, line numbers)
-- [ ] skillhub — reusable Claude skills portal
-- [ ] TypeScript HTTP client detection (axios, fetch)
+- [x] Multi-repo org scan
+- [x] TypeScript HTTP client detection (axios, fetch, got, ky)
+- [x] Python variable-assignment tracking for URL resolution
+- [x] Per-repo knowledge graph (classes, methods, signatures, call sites, line numbers)
+- [x] SQLite symbol/graph store + `deplar query`
+- [x] MCP server — expose knowledge graph to agents
+- [x] Multi-repo git-worktree checkout (`deplar workspace`)
+- [x] Impact reports (`deplar impact`)
+- [x] Symbol-aware CLAUDE.md v2 (signatures + line numbers + learned patterns)
+- [x] Agent memory layer (`deplar remember` / `recall`, persisted in the store)
+- [x] Cross-repo workspace validator (`deplar verify-workspace`)
+- [x] SKILL.md generator + skillhub portal (`deplar skill` / `deplar skillhub`)
 - [ ] Go support
+- [ ] Code embeddings + hybrid search
+- [ ] Skillhub web portal with RAG-powered search (currently a static portal)
 
 ---
 
@@ -199,20 +306,30 @@ With deplar:
 ```
 deplar/
   src/deplar/
-    cli.py              # typer CLI — scan, map, diff, claude-md
+    cli.py              # typer CLI — scan, scan-org, map, claude-md, query,
+                        #   impact, workspace, verify-workspace, remember, recall,
+                        #   skill, skillhub, mcp
+    mcp_server.py       # FastMCP server exposing the knowledge graph
+    worktree.py         # multi-repo git-worktree checkout
+    impact.py           # structured impact reports (blast radius, call sites)
+    validator.py        # cross-repo workspace test runner
+    skill.py            # SKILL.md generator + skillhub portal
     scanner/
       walker.py         # repo file walker with .gitignore support
-      ast_parser.py     # tree-sitter AST import + annotation parser
-      network_detector.py  # HTTP, Kafka, gRPC call detection
+      ast_parser.py     # tree-sitter import + annotation parser (py/java/ts/js)
+      network_detector.py  # HTTP, Kafka, gRPC detection + variable tracking
+      symbols.py        # symbol-level extraction (classes, methods, call sites)
       resolver.py       # merge + deduplicate signals, score confidence
+      org_scanner.py    # multi-repo scan + cross-repo resolution
     graph/
       store.py          # networkx dependency graph, blast radius, export
+      symbol_store.py   # SQLite store: symbols, calls, dependency edges
     output/
       claude_md.py      # CLAUDE.md generator
   tests/
     fixtures/           # sample microservices for integration tests
   schemas/
-    deps.json           # JSON Schema for the deps.json manifest
+    deps.schema.json    # JSON Schema for the deps.json manifest
 ```
 
 ---

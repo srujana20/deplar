@@ -1,19 +1,19 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
-from xml.dom import Node
 
 import tree_sitter_java as tsjava
 import tree_sitter_python as tspython
-from tree_sitter import Language, Parser
+import tree_sitter_typescript as tstypescript
+from tree_sitter import Language, Node, Parser
 
 from deplar.scanner.walker import FileMap
 
 PY_LANGUAGE = Language(tspython.language())
-parser = Parser(PY_LANGUAGE)
-
 JAVA_LANGUAGE = Language(tsjava.language())
-parser_java = Parser(JAVA_LANGUAGE)
+TS_LANGUAGE = Language(tstypescript.language_typescript())
+TSX_LANGUAGE = Language(tstypescript.language_tsx())
+
 
 @dataclass
 class ImportEdge:
@@ -23,6 +23,7 @@ class ImportEdge:
     line_number: int
     raw: str
 
+
 @dataclass
 class FeignClientEdge:
     source_file: Path
@@ -30,6 +31,7 @@ class FeignClientEdge:
     url_pattern: str
     declared_in: str
     line_number: int
+
 
 def _node_text(node: Node, source: bytes) -> str:
     return source[node.start_byte:node.end_byte].decode("utf-8")
@@ -39,8 +41,7 @@ def parse_python_imports(path: Path) -> List[ImportEdge]:
     source = path.read_bytes()
     parser = Parser(PY_LANGUAGE)
     tree = parser.parse(source)
-    edges = []
-    return edges
+    edges: List[ImportEdge] = []
 
     def walk(node: Node):
         if node.type == "import_statement":
@@ -62,15 +63,21 @@ def parse_python_imports(path: Path) -> List[ImportEdge]:
             # e.g. from pathlib import Path, from . import utils
             module = ""
             imported = []
+            module_node = node.child_by_field_name("module_name")
+            if module_node:
+                module = _node_text(module_node, source)
+            else:
+                # relative imports (from . import x) expose no module_name field
+                for child in node.children:
+                    if child.type in ("dotted_name", "relative_import"):
+                        module = _node_text(child, source)
+                        break
+            # collect imported names (children after the module_name node)
             for child in node.children:
-                if child.type in ("dotted_name", "relative_import"):
-                    module = _node_text(child, source)
-                elif child.type == "import_prefix":
-                    module = _node_text(child, source)
-            # collect imported names
-            for child in node.children:
-                if child.type in ("dotted_name", "aliased_import") and _node_text(child, source) != module:
-                    imported.append(_node_text(child, source))
+                if child.type in ("dotted_name", "aliased_import"):
+                    text = _node_text(child, source)
+                    if text != module:
+                        imported.append(text)
             edges.append(ImportEdge(
                 source_file=path,
                 imported_module=module,
@@ -85,11 +92,12 @@ def parse_python_imports(path: Path) -> List[ImportEdge]:
     walk(tree.root_node)
     return edges
 
+
 def parse_java_imports(path: Path) -> List[ImportEdge]:
     source = path.read_bytes()
     parser = Parser(JAVA_LANGUAGE)
     tree = parser.parse(source)
-    edges = []
+    edges: List[ImportEdge] = []
 
     def walk(node: Node):
         if node.type == "import_declaration":
@@ -110,11 +118,82 @@ def parse_java_imports(path: Path) -> List[ImportEdge]:
     return edges
 
 
+def _ts_string_value(node: Node, source: bytes) -> str:
+    """Extract the text of a TS `string` node without its surrounding quotes."""
+    for child in node.children:
+        if child.type == "string_fragment":
+            return _node_text(child, source)
+    return _node_text(node, source).strip("\"'`")
+
+
+def parse_typescript_imports(path: Path, tsx: bool = False) -> List[ImportEdge]:
+    source = path.read_bytes()
+    parser = Parser(TSX_LANGUAGE if tsx else TS_LANGUAGE)
+    tree = parser.parse(source)
+    edges: List[ImportEdge] = []
+
+    def _imported_names(clause: Node) -> List[str]:
+        names: List[str] = []
+
+        def collect(n: Node):
+            if n.type in ("identifier", "property_identifier"):
+                names.append(_node_text(n, source))
+            for c in n.children:
+                collect(c)
+
+        collect(clause)
+        return names
+
+    def walk(node: Node):
+        # import ... from 'module'   /   import 'module'
+        if node.type == "import_statement":
+            module = ""
+            names: List[str] = []
+            for child in node.children:
+                if child.type == "string":
+                    module = _ts_string_value(child, source)
+                elif child.type == "import_clause":
+                    names = _imported_names(child)
+            if module:
+                edges.append(ImportEdge(
+                    source_file=path,
+                    imported_module=module,
+                    imported_names=names or [module.split("/")[-1]],
+                    line_number=node.start_point[0] + 1,
+                    raw=_node_text(node, source),
+                ))
+
+        # const x = require('module')
+        elif node.type == "call_expression":
+            func = node.child_by_field_name("function")
+            args = node.child_by_field_name("arguments")
+            if func and args and _node_text(func, source) == "require":
+                for child in args.children:
+                    if child.type == "string":
+                        module = _ts_string_value(child, source)
+                        edges.append(ImportEdge(
+                            source_file=path,
+                            imported_module=module,
+                            imported_names=[module.split("/")[-1]],
+                            line_number=node.start_point[0] + 1,
+                            raw=_node_text(node, source),
+                        ))
+                        break
+
+        for child in node.children:
+            walk(child)
+
+    walk(tree.root_node)
+    return edges
+
+
 def parse_feign_clients(path: Path) -> List[FeignClientEdge]:
+    import re
+
     source = path.read_bytes()
     parser = Parser(JAVA_LANGUAGE)
     tree = parser.parse(source)
-    edges = []
+    edges: List[FeignClientEdge] = []
 
     def walk(node: Node, current_class: str = ""):
         if node.type == "class_declaration":
@@ -122,7 +201,7 @@ def parse_feign_clients(path: Path) -> List[FeignClientEdge]:
                 if child.type == "identifier":
                     current_class = _node_text(child, source)
 
-        if node.type == "marker_annotation" or node.type == "annotation":
+        if node.type in ("marker_annotation", "annotation"):
             name_node = node.child_by_field_name("name")
             if name_node and _node_text(name_node, source) == "FeignClient":
                 client_name = ""
@@ -130,8 +209,6 @@ def parse_feign_clients(path: Path) -> List[FeignClientEdge]:
                 args = node.child_by_field_name("arguments")
                 if args:
                     text = _node_text(args, source)
-                    # crude but effective extraction from annotation args
-                    import re
                     name_match = re.search(r'name\s*=\s*"([^"]+)"', text)
                     url_match = re.search(r'url\s*=\s*"([^"]+)"', text)
                     if name_match:
@@ -148,15 +225,10 @@ def parse_feign_clients(path: Path) -> List[FeignClientEdge]:
 
         for child in node.children:
             walk(child, current_class)
-    
+
     walk(tree.root_node)
-    print_tree(tree.root_node, source)
     return edges
 
-def print_tree(node, source, indent=0):
-    print(" " * indent + f"{node.type}: {source[node.start_byte:node.end_byte][:40]}")
-    for child in node.children:
-        print_tree(child, source, indent + 2)
 
 class ASTParser:
     def parse(self, file_map: FileMap) -> tuple[List[ImportEdge], List[FeignClientEdge]]:
@@ -176,5 +248,20 @@ class ASTParser:
             except Exception as e:
                 print(f"[warn] failed to parse {path}: {e}")
 
-        return import_edges, feign_edges
+        for path in file_map.files.get("typescript", []):
+            try:
+                import_edges.extend(
+                    parse_typescript_imports(path, tsx=path.suffix == ".tsx")
+                )
+            except Exception as e:
+                print(f"[warn] failed to parse {path}: {e}")
 
+        for path in file_map.files.get("javascript", []):
+            try:
+                import_edges.extend(
+                    parse_typescript_imports(path, tsx=path.suffix == ".jsx")
+                )
+            except Exception as e:
+                print(f"[warn] failed to parse {path}: {e}")
+
+        return import_edges, feign_edges

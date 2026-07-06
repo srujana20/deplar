@@ -5,12 +5,15 @@ from rich.console import Console
 from rich.table import Table
 
 from deplar.graph.store import DependencyGraph
+from deplar.graph.symbol_store import SymbolStore
 from deplar.output.claude_md import ClaudeMdGenerator
 from deplar.scanner.ast_parser import ASTParser
 from deplar.scanner.network_detector import NetworkDetector
 from deplar.scanner.org_scanner import OrgConfig, OrgScanner
 from deplar.scanner.resolver import DependencyResolver
+from deplar.scanner.symbols import SymbolExtractor
 from deplar.scanner.walker import RepoWalker
+from deplar.worktree import WorktreeManager
 
 app = typer.Typer(
     name="deplar",
@@ -25,6 +28,7 @@ def scan(
     repo_path: str = typer.Argument(..., help="Path to the repo to scan"),
     output: str = typer.Option("deps.json", "--output", "-o"),
     name: str = typer.Option("", "--name", "-n", help="Repo name (defaults to folder name)"),
+    db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Scan a repo and build a dependency map."""
@@ -56,14 +60,26 @@ def scan(
     resolver = DependencyResolver()
     dep_edges = resolver.resolve(repo_name, import_edges, feign_edges, network_edges)
 
-    # 5. Build graph
+    # 5. Extract symbols (classes, methods, call sites)
+    console.print("  [dim]→ extracting symbols...[/dim]")
+    symbol_index = SymbolExtractor().extract(file_map, repo_name)
+
+    # 6. Build graph
     graph = DependencyGraph()
     for edge in dep_edges:
         graph.add_dependency(edge)
 
-    # 6. Save
+    # 7. Save deps.json + populate the SQLite symbol/graph store
     out_path = Path(output)
     graph.save(out_path, repo_name=repo_name, repo_path=str(path))
+
+    import datetime as _dt
+    store = SymbolStore(Path(db))
+    store.upsert_repo(repo_name, str(path),
+                      _dt.datetime.now(_dt.timezone.utc).isoformat())
+    store.replace_symbols(repo_name, symbol_index)
+    store.replace_dependencies(dep_edges)
+    store.close()
 
     # 7. Print summary table
     summary = graph.summary()
@@ -71,6 +87,7 @@ def scan(
 
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_row("[dim]Files scanned[/dim]",    str(file_map.total()))
+    table.add_row("[dim]Symbols indexed[/dim]",  str(len(symbol_index.symbols)))
     table.add_row("[dim]Dependencies found[/dim]", str(summary["total_edges"]))
     table.add_row("[dim]Services detected[/dim]",  str(summary["total_nodes"]))
     if summary["most_depended_on"]:
@@ -120,8 +137,13 @@ def claude_md(
     graph: str = typer.Option("deps.json", "--graph", "-g"),
     output: str = typer.Option("CLAUDE.md", "--output", "-o"),
     name: str = typer.Option("", "--name", "-n"),
+    db: str = typer.Option("deplar.db", "--db",
+                           help="SQLite store for symbol/memory sections (v2)"),
 ):
-    """Generate a CLAUDE.md dependency context file for a repo."""
+    """Generate a CLAUDE.md dependency context file for a repo.
+
+    If the symbol store exists, includes the public API surface (with line
+    numbers) and any learned patterns (v2)."""
     from deplar.graph.store import DependencyGraph
 
     path = Path(repo_path).resolve()
@@ -146,11 +168,19 @@ def claude_md(
 
     g.load(graph_path)
 
-    generator = ClaudeMdGenerator(g, repo_name)
-    out_path = generator.write(Path(output))
+    store = None
+    if Path(db).exists():
+        store = SymbolStore(Path(db))
+
+    generator = ClaudeMdGenerator(g, repo_name, store=store)
+    content = generator.generate()
+    out_path = Path(output)
+    out_path.write_text(content)
+    if store is not None:
+        store.close()
 
     console.print(f"\n✓ Generated [bold]{out_path}[/bold]\n")
-    console.print(generator.generate())
+    console.print(content)
 
 
 @app.command()
@@ -183,6 +213,7 @@ def scan_org(
     repos_dir: str = typer.Argument(..., help="Directory of repos or path to deplar.yaml"),
     config: str = typer.Option("", "--config", "-c", help="Path to deplar.yaml"),
     output: str = typer.Option("org-deps.json", "--output", "-o"),
+    db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Scan multiple repos and build a cross-repo dependency graph."""
@@ -204,9 +235,12 @@ def scan_org(
                   f"[cyan]({len(org_config.repos)} repos)[/cyan]\n")
 
     scanner = OrgScanner(verbose=verbose)
+    store = SymbolStore(Path(db))
 
     with console.status("Scanning repos..."):
-        graph = scanner.scan_org(org_config)
+        graph = scanner.scan_org(org_config, store=store)
+
+    store.close()
 
     # save
     out_path = Path(output)
@@ -229,6 +263,287 @@ def scan_org(
     console.print(table)
     console.print(f"\n  Saved to [bold]{out_path}[/bold]\n")
 
+
+@app.command()
+def query(
+    calls: str = typer.Option("", "--calls", help="Repos that this repo calls"),
+    dependents: str = typer.Option("", "--dependents", help="Repos that call this repo"),
+    blast: str = typer.Option("", "--blast", help="Blast radius of this repo"),
+    symbols: str = typer.Option("", "--symbols", help="Search symbols by name"),
+    callers: str = typer.Option("", "--callers", help="Find call sites of a symbol"),
+    repo: str = typer.Option("", "--repo", help="Scope symbol/caller search to a repo"),
+    db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
+):
+    """Query the dependency + symbol knowledge graph."""
+    store_path = Path(db)
+    if not store_path.exists():
+        console.print(f"[red]Store not found: {db}[/red]  Run [bold]deplar scan[/bold] first.")
+        raise typer.Exit(1)
+    store = SymbolStore(store_path)
+
+    if calls:
+        deps = store.get_dependencies(calls)
+        console.print(f"\n[cyan]{calls}[/cyan] calls:")
+        for d in deps or []:
+            console.print(f"  → {d['repo']} ({', '.join(d['types'])}) {d['confidence']:.0%}")
+        if not deps:
+            console.print("  [dim]none[/dim]")
+
+    if dependents:
+        deps = store.get_dependents(dependents)
+        console.print(f"\n[cyan]{dependents}[/cyan] is called by:")
+        for d in deps or []:
+            console.print(f"  ← {d['repo']} ({', '.join(d['types'])}) {d['confidence']:.0%}")
+        if not deps:
+            console.print("  [dim]none[/dim]")
+
+    if blast:
+        radius = store.blast_radius(blast)
+        console.print(f"\n[cyan]{blast}[/cyan] blast radius:")
+        for r in radius or []:
+            console.print(f"  ⚠ {r}")
+        if not radius:
+            console.print("  [dim]no downstream dependents[/dim]")
+
+    if symbols:
+        results = store.search_symbols(symbols, repo=repo or None)
+        console.print(f"\nSymbols matching [cyan]{symbols}[/cyan]:")
+        for s in results:
+            console.print(
+                f"  [{s['kind']}] [white]{s['qualified_name']}[/white] "
+                f"[dim]{s['signature']}[/dim] — {s['repo']}/{s['file']}:{s['start_line']}"
+            )
+        if not results:
+            console.print("  [dim]none[/dim]")
+
+    if callers:
+        results = store.get_callers(callers, repo=repo or None)
+        console.print(f"\nCall sites of [cyan]{callers}[/cyan]:")
+        for c in results:
+            console.print(
+                f"  {c['repo']}/{c['file']}:{c['line']} "
+                f"[dim](in {c['caller']}: {c['callee']})[/dim]"
+            )
+        if not results:
+            console.print("  [dim]none[/dim]")
+
+    store.close()
+
+
+@app.command()
+def workspace(
+    target: str = typer.Argument(..., help="Repo to build a coordinated workspace for"),
+    out: str = typer.Option("./workspace", "--out", "-o", help="Workspace directory"),
+    branch: str = typer.Option("deplar/change", "--branch", "-b", help="Branch for worktrees"),
+    db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
+    transitive: bool = typer.Option(False, "--transitive", "-t",
+                                    help="Include the full transitive blast radius"),
+    with_dependencies: bool = typer.Option(False, "--with-dependencies",
+                                           help="Also include repos the target calls"),
+    remove: bool = typer.Option(False, "--remove", help="Tear down the workspace"),
+):
+    """Check out a repo and all repos affected by changing it as git worktrees
+    in one workspace — ready for coordinated, parallel edits."""
+    store_path = Path(db)
+    if not store_path.exists():
+        console.print(f"[red]Store not found: {db}[/red]  Run [bold]deplar scan-org[/bold] first.")
+        raise typer.Exit(1)
+
+    store = SymbolStore(store_path)
+    manager = WorktreeManager(store)
+
+    if remove:
+        console.print(f"\n[bold]Removing worktrees under[/bold] {out}\n")
+        for r in manager.remove(Path(out)):
+            mark = "[green]✓[/green]" if r.status == "removed" else "[red]✗[/red]"
+            console.print(f"  {mark} {r.repo}  [dim]{r.detail}[/dim]")
+        store.close()
+        return
+
+    affected = manager.affected_repos(
+        target, transitive=transitive, include_dependencies=with_dependencies)
+    console.print(
+        f"\n[bold]deplar[/bold] workspace for [cyan]{target}[/cyan] — "
+        f"{len(affected)} repo(s): {', '.join(affected)}\n"
+    )
+
+    results = manager.checkout(
+        target, Path(out), branch,
+        transitive=transitive, include_dependencies=with_dependencies,
+    )
+
+    marks = {"created": "[green]✓[/green]", "exists": "[yellow]•[/yellow]",
+             "skipped": "[yellow]⚠[/yellow]", "error": "[red]✗[/red]"}
+    for r in results:
+        console.print(f"  {marks.get(r.status, '?')} [white]{r.repo}[/white] "
+                      f"→ {r.worktree_path}  [dim]{r.status}: {r.detail}[/dim]")
+
+    created = sum(1 for r in results if r.status == "created")
+    console.print(f"\n  {created} worktree(s) ready in [bold]{out}[/bold]\n")
+    store.close()
+
+
+@app.command()
+def impact(
+    target: str = typer.Argument(..., help="Repo to analyze the impact of changing"),
+    symbol: str = typer.Option("", "--symbol", "-s", help="Scope to a symbol name"),
+    depth: int = typer.Option(3, "--depth", help="Blast-radius depth"),
+    db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
+    json_out: bool = typer.Option(False, "--json", help="Emit JSON instead of markdown"),
+    output: str = typer.Option("", "--output", "-o", help="Write report to a file"),
+):
+    """Produce a structured impact report before touching a repo."""
+    from deplar.impact import ImpactAnalyzer
+
+    store_path = Path(db)
+    if not store_path.exists():
+        console.print(f"[red]Store not found: {db}[/red]  Run [bold]deplar scan-org[/bold] first.")
+        raise typer.Exit(1)
+
+    store = SymbolStore(store_path)
+    report = ImpactAnalyzer(store).analyze(target, symbol=symbol or None, depth=depth)
+    store.close()
+
+    if json_out:
+        import json
+        text = json.dumps(report.to_dict(), indent=2)
+    else:
+        text = ImpactAnalyzer.render_markdown(report)
+
+    if output:
+        Path(output).write_text(text)
+        console.print(f"✓ Wrote impact report to [bold]{output}[/bold]")
+    else:
+        console.print(text)
+
+
+@app.command()
+def remember(
+    repo: str = typer.Argument(..., help="Repo the note is about"),
+    note: str = typer.Argument(..., help="The pattern/convention/gotcha to remember"),
+    kind: str = typer.Option("note", "--kind", "-k",
+                             help="pattern | convention | gotcha | note"),
+    db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
+):
+    """Persist a learned pattern about a repo (survives across sessions)."""
+    store = SymbolStore(Path(db))
+    import datetime as _dt
+    mem_id = store.remember(repo, note, kind=kind,
+                            created_at=_dt.datetime.now(_dt.timezone.utc).isoformat())
+    store.close()
+    console.print(f"✓ Remembered [dim]#{mem_id}[/dim] ({kind}) for [cyan]{repo}[/cyan]")
+
+
+@app.command()
+def recall(
+    repo: str = typer.Argument(..., help="Repo to recall notes for"),
+    kind: str = typer.Option("", "--kind", "-k", help="Filter by kind"),
+    db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
+):
+    """Recall everything learned about a repo."""
+    store = SymbolStore(Path(db))
+    notes = store.recall(repo, kind=kind or None)
+    store.close()
+    console.print(f"\n[bold]Learned about[/bold] [cyan]{repo}[/cyan]:")
+    for n in notes:
+        console.print(f"  [dim]#{n['id']}[/dim] ({n['kind']}) {n['note']}")
+    if not notes:
+        console.print("  [dim]nothing yet[/dim]")
+
+
+@app.command()
+def skill(
+    repo: str = typer.Argument(..., help="Repo to generate a SKILL.md for"),
+    output: str = typer.Option("SKILL.md", "--output", "-o"),
+    db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
+):
+    """Generate a reusable Claude skill (SKILL.md) for a repo."""
+    from deplar.skill import SkillGenerator
+
+    store_path = Path(db)
+    if not store_path.exists():
+        console.print(f"[red]Store not found: {db}[/red]  Run [bold]deplar scan[/bold] first.")
+        raise typer.Exit(1)
+    store = SymbolStore(store_path)
+    content = SkillGenerator(store).generate(repo)
+    store.close()
+    Path(output).write_text(content)
+    console.print(f"✓ Generated [bold]{output}[/bold]\n")
+    console.print(content)
+
+
+@app.command()
+def skillhub(
+    out: str = typer.Option("./skillhub", "--out", "-o", help="Skillhub output dir"),
+    db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
+):
+    """Generate a skill per repo plus a static browsable portal."""
+    from deplar.skill import build_skillhub
+
+    store_path = Path(db)
+    if not store_path.exists():
+        console.print(f"[red]Store not found: {db}[/red]  Run [bold]deplar scan-org[/bold] first.")
+        raise typer.Exit(1)
+    store = SymbolStore(store_path)
+    index = build_skillhub(store, Path(out))
+    store.close()
+    console.print(f"\n[bold]Skillhub[/bold] — {len(index)} skill(s) → {out}")
+    for s in index:
+        console.print(f"  [green]✓[/green] {s['repo']}  [dim]v{s['version']} "
+                      f"({', '.join(s['languages']) or '—'})[/dim]")
+    console.print(f"\n  Open [bold]{out}/index.html[/bold] to browse.\n")
+
+
+@app.command("verify-workspace")
+def verify_workspace(
+    workspace: str = typer.Argument("./workspace", help="Workspace directory"),
+    test_cmd: str = typer.Option("", "--test-cmd", help="Override test command for all repos"),
+    timeout: int = typer.Option(600, "--timeout", help="Per-repo timeout (seconds)"),
+):
+    """Run each repo's tests across a coordinated workspace (validator)."""
+    from deplar.validator import WorkspaceValidator
+
+    ws = Path(workspace)
+    if not ws.exists():
+        console.print(f"[red]Workspace not found: {workspace}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"\n[bold]Validating workspace[/bold] {workspace}\n")
+    result = WorkspaceValidator(timeout=timeout).validate(
+        ws, test_cmd=test_cmd or None)
+
+    for r in result.repos:
+        if r.skipped:
+            console.print(f"  [yellow]⊘[/yellow] {r.repo}  [dim]{r.detail}[/dim]")
+        elif r.passed:
+            console.print(f"  [green]✓[/green] {r.repo}  [dim]{r.command}[/dim]")
+        else:
+            console.print(f"  [red]✗[/red] {r.repo}  [dim]{r.command} — {r.detail}[/dim]")
+            if r.output_tail:
+                for line in r.output_tail.splitlines():
+                    console.print(f"      [dim]{line}[/dim]")
+
+    console.print()
+    if result.ok:
+        console.print("  [green]All repos passed.[/green]\n")
+    else:
+        console.print("  [red]Some repos failed.[/red]\n")
+        raise typer.Exit(1)
+
+
+@app.command()
+def mcp(
+    db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
+    skills: str = typer.Option("skillhub", "--skills", help="Skillhub registry dir"),
+):
+    """Run the deplar MCP server (stdio) exposing the knowledge graph to agents."""
+    import os
+
+    os.environ["DEPLAR_DB"] = str(Path(db).resolve())
+    os.environ["DEPLAR_SKILLS"] = str(Path(skills).resolve())
+    from deplar.mcp_server import main as run_mcp
+
+    run_mcp()
 
 
 if __name__ == "__main__":

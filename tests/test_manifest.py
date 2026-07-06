@@ -1,9 +1,8 @@
-import json
 from pathlib import Path
+
 from deplar.graph.manifest import DepsManifest
 from deplar.graph.store import DependencyGraph
 from deplar.scanner.resolver import DependencyEdge
-import tempfile
 
 
 def _make_deps_json(tmp_path) -> Path:

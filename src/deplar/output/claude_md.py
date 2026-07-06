@@ -1,21 +1,24 @@
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from deplar.graph.store import DependencyGraph
+from deplar.graph.symbol_store import SymbolStore
 
 
 class ClaudeMdGenerator:
-    def __init__(self, graph: DependencyGraph, repo_name: str):
+    def __init__(self, graph: DependencyGraph, repo_name: str,
+                 store: Optional[SymbolStore] = None):
         self.graph = graph
         self.repo_name = repo_name
+        self.store = store
 
     def generate(self) -> str:
-        deps = self.graph.get_dependencies(self.repo_name)
         dependents = self.graph.get_dependents(self.repo_name)
         blast = self.graph.blast_radius(self.repo_name)
 
         # split deps by type
-        http_deps, kafka_emits, kafka_subs, other_deps = [], [], [], []
+        http_deps, kafka_emits, other_deps = [], [], []
 
         for _, to, data in self.graph.g.edges(self.repo_name, data=True):
             types = data.get("dep_types", [])
@@ -76,6 +79,11 @@ class ClaudeMdGenerator:
         else:
             lines.append("- no downstream dependents detected")
 
+        # v2: public API surface + learned patterns from the symbol store
+        if self.store is not None:
+            lines.extend(self._api_surface_section())
+            lines.extend(self._learned_patterns_section())
+
         # instructions for the agent
         lines.append("\n## Agent instructions")
         lines.append(
@@ -96,6 +104,35 @@ class ClaudeMdGenerator:
         )
 
         return "\n".join(lines)
+
+    def _api_surface_section(self) -> list[str]:
+        symbols = self.store.symbols_for_repo(
+            self.repo_name, kinds=["class", "interface", "method", "function"],
+            limit=40,
+        )
+        lines = ["\n## Public API surface"]
+        if not symbols:
+            lines.append("- no symbols indexed")
+            return lines
+        lines.append(
+            "Changing any of these signatures may break callers — check the "
+            "blast radius first."
+        )
+        for s in symbols:
+            marker = f"`{s['signature']}`" if s["signature"] else f"`{s['name']}`"
+            lines.append(
+                f"- [{s['kind']}] {marker} — {s['file']}:{s['start_line']}"
+            )
+        return lines
+
+    def _learned_patterns_section(self) -> list[str]:
+        notes = self.store.recall(self.repo_name)
+        if not notes:
+            return []
+        lines = ["\n## Learned patterns & gotchas"]
+        for n in notes:
+            lines.append(f"- ({n['kind']}) {n['note']}")
+        return lines
 
     def write(self, output_path: Path = None):
         content = self.generate()

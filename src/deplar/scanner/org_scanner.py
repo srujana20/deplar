@@ -1,13 +1,16 @@
+import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Tuple
 
 import yaml
 
 from deplar.graph.store import DependencyGraph
+from deplar.graph.symbol_store import SymbolStore
 from deplar.scanner.ast_parser import ASTParser
 from deplar.scanner.network_detector import NetworkDetector
 from deplar.scanner.resolver import DependencyEdge, DependencyResolver
+from deplar.scanner.symbols import SymbolExtractor, SymbolIndex
 from deplar.scanner.walker import RepoWalker
 
 
@@ -50,31 +53,46 @@ class OrgScanner:
         self._parser = ASTParser()
         self._detector = NetworkDetector()
         self._resolver = DependencyResolver()
+        self._symbols = SymbolExtractor()
 
     def scan_repo(self, config: RepoConfig) -> List[DependencyEdge]:
+        edges, _ = self.scan_repo_full(config)
+        return edges
+
+    def scan_repo_full(
+        self, config: RepoConfig
+    ) -> Tuple[List[DependencyEdge], SymbolIndex]:
         walker = RepoWalker(config.path)
         file_map = walker.walk()
 
         import_edges, feign_edges = self._parser.parse(file_map)
         network_edges = self._detector.detect(file_map)
+        symbol_index = self._symbols.extract(file_map, config.name)
 
-        return self._resolver.resolve(
+        edges = self._resolver.resolve(
             config.name,
             import_edges,
             feign_edges,
             network_edges,
         )
+        return edges, symbol_index
 
-    def scan_org(self, org_config: OrgConfig) -> DependencyGraph:
+    def scan_org(
+        self, org_config: OrgConfig, store: Optional[SymbolStore] = None
+    ) -> DependencyGraph:
         graph = DependencyGraph()
         all_edges: List[DependencyEdge] = []
+        now = dt.datetime.now(dt.timezone.utc).isoformat()
 
         for repo in org_config.repos:
             if self.verbose:
                 print(f"  scanning {repo.name}...")
             try:
-                edges = self.scan_repo(repo)
+                edges, symbol_index = self.scan_repo_full(repo)
                 all_edges.extend(edges)
+                if store is not None:
+                    store.upsert_repo(repo.name, str(repo.path), now)
+                    store.replace_symbols(repo.name, symbol_index)
             except Exception as e:
                 print(f"  [warn] failed to scan {repo.name}: {e}")
 
@@ -85,6 +103,9 @@ class OrgScanner:
 
         for edge in resolved:
             graph.add_dependency(edge)
+
+        if store is not None:
+            store.replace_dependencies(resolved)
 
         return graph
 

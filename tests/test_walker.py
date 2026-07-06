@@ -1,4 +1,5 @@
 from pathlib import Path
+
 from deplar.scanner.walker import RepoWalker
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_repo"
@@ -9,7 +10,8 @@ def test_finds_python_files():
     fm = RepoWalker(FIXTURE).walk()
     print(f"Found files: {fm.files}")
     assert "python" in fm.files
-    assert len(fm.files["python"]) == 2  # main.py + utils.py
+    # main.py, utils.py, events.py, payments_client.py
+    assert len(fm.files["python"]) == 4
 
 def test_finds_typescript_files():
     fm = RepoWalker(FIXTURE).walk()
@@ -26,4 +28,5 @@ def test_excludes_vendor():
 
 def test_total_count():
     fm = RepoWalker(FIXTURE).walk()
-    assert fm.total() == 5  # main.py, utils.py, client.ts, OrderService.java
+    # 4 python + 2 typescript (client.ts, utils.ts) + 1 java (OrderService.java)
+    assert fm.total() == 7

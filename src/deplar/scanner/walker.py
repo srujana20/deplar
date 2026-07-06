@@ -37,9 +37,9 @@ class RepoWalker:
         gitignore = self.root / ".gitignore"
         if gitignore.exists():
             return pathspec.PathSpec.from_lines(
-                "gitwildmatch", gitignore.read_text().splitlines()
+                "gitignore", gitignore.read_text().splitlines()
             )
-        return pathspec.PathSpec.from_lines("gitwildmatch", [])
+        return pathspec.PathSpec.from_lines("gitignore", [])
     
     def _is_excluded(self, path: Path) -> bool:
         # Always exclude certain dirs
@@ -47,9 +47,7 @@ class RepoWalker:
             if part in ALWAYS_EXCLUDE:
                 return True
         # Check .gitignore
-        
         path = path.resolve()
-        print(f"Checking {path} {self.root} against .gitignore")
         relative = path.relative_to(self.root)
         return self.spec.match_file(str(relative))
     
