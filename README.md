@@ -67,6 +67,34 @@ Each dependency gets a confidence score. High confidence means a concrete runtim
 
 ---
 
+## Identity resolution — no manual name mapping
+
+The hard part of a cross-repo map is turning a reference like
+`https://order-mgmt-svc.internal/v1` into "that's the `orders` repo" — when the
+folder name rarely matches the deployed service name.
+
+deplar solves this without hardcoding or manual mapping in two moves:
+
+1. **Provider identity catalog.** Every repo advertises what it *is* — deplar
+   extracts these identities from `package.json` / `pyproject.toml` / `go.mod`
+   names, `spring.application.name`, Kubernetes `Service` names, OpenAPI
+   `servers`/`info.title`, and the git remote. `deplar identities <repo>` shows a
+   repo's catalog.
+2. **Corpus reconciliation.** Each consumer reference is matched against that
+   catalog across *all* repos (exact → plural-stem → conservative token-subset,
+   confidence-scored). It's iterative: after scanning a new repo, run
+   `deplar reconcile` and references that were left dangling when earlier repos
+   were scanned get bound to the newly-declared identity — self-references are
+   dropped and duplicates merged.
+
+```bash
+deplar scan ./checkout            # references order-mgmt-svc.internal (dangling)
+deplar scan ./orders              # declares identity "order-mgmt-svc" via package.json
+deplar reconcile                  # binds checkout -> orders automatically
+```
+
+---
+
 ## Installation
 
 ```bash
@@ -284,6 +312,7 @@ With deplar:
 - [x] CLI: `scan`, `map`, `diff`
 - [x] CLAUDE.md generator
 - [x] Multi-repo org scan
+- [x] Automatic identity resolution (provider catalog + corpus reconciliation)
 - [x] TypeScript HTTP client detection (axios, fetch, got, ky)
 - [x] Python variable-assignment tracking for URL resolution
 - [x] Per-repo knowledge graph (classes, methods, signatures, call sites, line numbers)
@@ -319,8 +348,10 @@ deplar/
       ast_parser.py     # tree-sitter import + annotation parser (py/java/ts/js)
       network_detector.py  # HTTP, Kafka, gRPC detection + variable tracking
       symbols.py        # symbol-level extraction (classes, methods, call sites)
+      identity.py       # provider identity extraction (the catalog)
+      reconciler.py     # match references against the catalog across the corpus
       resolver.py       # merge + deduplicate signals, score confidence
-      org_scanner.py    # multi-repo scan + cross-repo resolution
+      org_scanner.py    # multi-repo scan + identity reconciliation
     graph/
       store.py          # networkx dependency graph, blast radius, export
       symbol_store.py   # SQLite store: symbols, calls, dependency edges

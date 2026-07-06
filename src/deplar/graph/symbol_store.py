@@ -56,12 +56,21 @@ CREATE TABLE IF NOT EXISTS memory (
     note       TEXT NOT NULL,
     created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS aliases (
+    repo       TEXT NOT NULL,
+    alias      TEXT NOT NULL,   -- normalized form used for matching
+    raw        TEXT,            -- original declared value
+    source     TEXT,            -- config | package | spring | go | k8s | openapi | git | manual
+    confidence REAL,
+    PRIMARY KEY (repo, alias)
+);
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_repo ON symbols(repo);
 CREATE INDEX IF NOT EXISTS idx_calls_callee ON calls(callee_name);
 CREATE INDEX IF NOT EXISTS idx_deps_to ON dependencies(to_repo);
 CREATE INDEX IF NOT EXISTS idx_deps_from ON dependencies(from_repo);
 CREATE INDEX IF NOT EXISTS idx_memory_repo ON memory(repo);
+CREATE INDEX IF NOT EXISTS idx_aliases_alias ON aliases(alias);
 """
 
 VALID_MEMORY_KINDS = ("pattern", "convention", "gotcha", "note")
@@ -120,6 +129,50 @@ class SymbolStore:
                  e.confidence, json.dumps(e.evidence)),
             )
         self.conn.commit()
+
+    def all_dependencies(self) -> List[DependencyEdge]:
+        rows = self.conn.execute(
+            "SELECT from_repo, to_repo, dep_types, confidence, evidence "
+            "FROM dependencies"
+        ).fetchall()
+        return [
+            DependencyEdge(
+                from_repo=r["from_repo"], to_repo=r["to_repo"],
+                dep_types=json.loads(r["dep_types"]),
+                confidence=r["confidence"], evidence=json.loads(r["evidence"]),
+            ) for r in rows
+        ]
+
+    def clear_dependencies(self):
+        self.conn.execute("DELETE FROM dependencies")
+        self.conn.commit()
+
+    # --- identity catalog (what each repo advertises itself as) ---
+
+    def replace_aliases(self, repo: str, aliases: List[dict]):
+        """Replace a repo's identity aliases. Each item: {alias, raw, source, confidence}."""
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM aliases WHERE repo = ?", (repo,))
+        cur.executemany(
+            "INSERT OR REPLACE INTO aliases(repo, alias, raw, source, confidence) "
+            "VALUES (?,?,?,?,?)",
+            [(repo, a["alias"], a.get("raw", a["alias"]), a.get("source", "manual"),
+              a.get("confidence", 0.8)) for a in aliases if a.get("alias")],
+        )
+        self.conn.commit()
+
+    def all_aliases(self) -> List[dict]:
+        rows = self.conn.execute(
+            "SELECT repo, alias, raw, source, confidence FROM aliases"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def aliases_for_repo(self, repo: str) -> List[dict]:
+        rows = self.conn.execute(
+            "SELECT repo, alias, raw, source, confidence FROM aliases "
+            "WHERE repo = ? ORDER BY confidence DESC", (repo,)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     # --- queries ---
 

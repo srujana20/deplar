@@ -8,7 +8,9 @@ import yaml
 from deplar.graph.store import DependencyGraph
 from deplar.graph.symbol_store import SymbolStore
 from deplar.scanner.ast_parser import ASTParser
+from deplar.scanner.identity import extract_identities
 from deplar.scanner.network_detector import NetworkDetector
+from deplar.scanner.reconciler import AliasCatalog, Reconciler
 from deplar.scanner.resolver import DependencyEdge, DependencyResolver
 from deplar.scanner.symbols import SymbolExtractor, SymbolIndex
 from deplar.scanner.walker import RepoWalker
@@ -82,6 +84,7 @@ class OrgScanner:
     ) -> DependencyGraph:
         graph = DependencyGraph()
         all_edges: List[DependencyEdge] = []
+        all_aliases: List[dict] = []
         now = dt.datetime.now(dt.timezone.utc).isoformat()
 
         for repo in org_config.repos:
@@ -90,21 +93,26 @@ class OrgScanner:
             try:
                 edges, symbol_index = self.scan_repo_full(repo)
                 all_edges.extend(edges)
+                identities = [a.as_dict()
+                              for a in extract_identities(repo.path, repo.name)]
+                all_aliases.extend({**a, "repo": repo.name} for a in identities)
                 if store is not None:
                     store.upsert_repo(repo.name, str(repo.path), now)
                     store.replace_symbols(repo.name, symbol_index)
+                    store.replace_aliases(repo.name, identities)
             except Exception as e:
                 print(f"  [warn] failed to scan {repo.name}: {e}")
 
-        # cross-repo resolution: normalize to_repo names
-        # against known repo names in the org
-        known_repos = {r.name.lower() for r in org_config.repos}
-        resolved = self._cross_resolve(all_edges, known_repos)
+        # Corpus reconciliation: bind each reference to the repo whose declared
+        # identity it matches (see reconciler.py), replacing folder-name guessing.
+        catalog = AliasCatalog.from_aliases(all_aliases)
+        resolved, self._last_stats = Reconciler().reconcile(all_edges, catalog)
 
         for edge in resolved:
             graph.add_dependency(edge)
 
         if store is not None:
+            store.clear_dependencies()
             store.replace_dependencies(resolved)
 
         return graph

@@ -74,11 +74,15 @@ def scan(
     graph.save(out_path, repo_name=repo_name, repo_path=str(path))
 
     import datetime as _dt
+
+    from deplar.scanner.identity import extract_identities
     store = SymbolStore(Path(db))
     store.upsert_repo(repo_name, str(path),
                       _dt.datetime.now(_dt.timezone.utc).isoformat())
     store.replace_symbols(repo_name, symbol_index)
     store.replace_dependencies(dep_edges)
+    store.replace_aliases(repo_name,
+                          [a.as_dict() for a in extract_identities(path, repo_name)])
     store.close()
 
     # 7. Print summary table
@@ -529,6 +533,70 @@ def verify_workspace(
     else:
         console.print("  [red]Some repos failed.[/red]\n")
         raise typer.Exit(1)
+
+
+@app.command()
+def reconcile(
+    db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
+    output: str = typer.Option("", "--output", "-o",
+                               help="Re-export the reconciled graph to deps.json"),
+):
+    """Re-bind dependency references to repos using the full identity catalog.
+
+    Run after scanning a new repo: references left dangling when earlier repos
+    were scanned get resolved against the newly-declared identities."""
+    from deplar.scanner.reconciler import AliasCatalog, Reconciler
+
+    store_path = Path(db)
+    if not store_path.exists():
+        console.print(f"[red]Store not found: {db}[/red]  Run [bold]deplar scan[/bold] first.")
+        raise typer.Exit(1)
+
+    store = SymbolStore(store_path)
+    catalog = AliasCatalog.from_aliases(store.all_aliases())
+    edges = store.all_dependencies()
+    resolved, stats = Reconciler().reconcile(edges, catalog)
+
+    store.clear_dependencies()
+    store.replace_dependencies(resolved)
+
+    if output:
+        graph = DependencyGraph()
+        for e in resolved:
+            graph.add_dependency(e)
+        graph.save(Path(output))
+
+    store.close()
+
+    console.print("\n[bold]Reconciliation[/bold]")
+    console.print(f"  edges in           {len(edges)}")
+    console.print(f"  [green]resolved to a repo   {stats.resolved}[/green]")
+    console.print(f"  merged duplicates    {stats.merged}")
+    console.print(f"  dropped self-refs    {stats.dropped_self}")
+    console.print(f"  left unresolved      {stats.unresolved}")
+    console.print(f"  edges out          {len(resolved)}\n")
+
+
+@app.command()
+def identities(
+    repo: str = typer.Argument(..., help="Repo to show the identity catalog for"),
+    db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
+):
+    """Show what identities a repo advertises itself as (its catalog)."""
+    store_path = Path(db)
+    if not store_path.exists():
+        console.print(f"[red]Store not found: {db}[/red]")
+        raise typer.Exit(1)
+    store = SymbolStore(store_path)
+    aliases = store.aliases_for_repo(repo)
+    store.close()
+    console.print(f"\n[cyan]{repo}[/cyan] is known as:")
+    for a in aliases:
+        console.print(f"  [white]{a['alias']}[/white] "
+                      f"[dim](from {a['raw']!r} via {a['source']}, "
+                      f"{a['confidence']:.0%})[/dim]")
+    if not aliases:
+        console.print("  [dim]no identities recorded — run deplar scan[/dim]")
 
 
 @app.command()
