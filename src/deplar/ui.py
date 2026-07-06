@@ -246,39 +246,40 @@ function build(data){
   EDGES.forEach(e=>{ adjOut[e.source].push(e.target); adjIn[e.target].push(e.source); });
   document.getElementById("stat").textContent =
     NODES.length + " services · " + EDGES.length + " deps";
-  layout();
+  runLayout();     // settle synchronously so the first paint is stable
   render();
   fit();
 }
 
-/* --- force layout (animated, cooling) --- */
-let alpha=1, raf=null;
-function layout(){ alpha=1; if(!raf) tick(); }
-function tick(){
-  const k=90, rep=9000;
+/* --- force layout (synchronous, stability-guarded) --- */
+function step(alpha){
+  const k=90, rep=9000, MAXV=60;
   for(let i=0;i<NODES.length;i++){
     const a=NODES[i];
     for(let j=i+1;j<NODES.length;j++){
       const b=NODES[j];
-      let dx=a.x-b.x, dy=a.y-b.y, d2=dx*dx+dy*dy||1, d=Math.sqrt(d2);
-      const f=rep/d2; const fx=dx/d*f, fy=dy/d*f;
+      let dx=a.x-b.x, dy=a.y-b.y, d=Math.sqrt(dx*dx+dy*dy);
+      if(d<0.01){ dx=(Math.random()-0.5); dy=(Math.random()-0.5); d=0.01; }
+      const f=Math.min(rep/(d*d), 1000); const fx=dx/d*f, fy=dy/d*f;
       a.vx+=fx; a.vy+=fy; b.vx-=fx; b.vy-=fy;
     }
-    a.vx += (500-a.x)*0.002; a.vy += (400-a.y)*0.002;   // gravity
+    a.vx += (500-a.x)*0.01; a.vy += (400-a.y)*0.01;   // gravity to centre
   }
   EDGES.forEach(e=>{
     const a=byId[e.source], b=byId[e.target];
-    let dx=b.x-a.x, dy=b.y-a.y, d=Math.sqrt(dx*dx+dy*dy)||1;
-    const f=(d-k)*0.02; const fx=dx/d*f, fy=dy/d*f;
+    let dx=b.x-a.x, dy=b.y-a.y, d=Math.sqrt(dx*dx+dy*dy)||0.01;
+    const f=(d-k)*0.04; const fx=dx/d*f, fy=dy/d*f;
     a.vx+=fx; a.vy+=fy; b.vx-=fx; b.vy-=fy;
   });
   NODES.forEach(n=>{
-    if(n.fx!=null){ n.x=n.fx; n.y=n.fy; n.vx=0; n.vy=0; return; }
-    n.vx*=0.85; n.vy*=0.85; n.x+=n.vx*alpha; n.y+=n.vy*alpha;
+    n.vx=Math.max(-MAXV,Math.min(MAXV,n.vx))*0.85;
+    n.vy=Math.max(-MAXV,Math.min(MAXV,n.vy))*0.85;
+    n.x+=n.vx*alpha; n.y+=n.vy*alpha;
   });
-  positions();
-  alpha*=0.985;
-  if(alpha>0.02) raf=requestAnimationFrame(tick); else raf=null;
+}
+function runLayout(){
+  let alpha=1;
+  for(let it=0; it<400; it++){ step(alpha); alpha*=0.99; }
 }
 
 /* --- render --- */
@@ -334,18 +335,17 @@ function toSvg(px,py){ const r=svg.getBoundingClientRect();
 
 /* --- drag (node + background pan) --- */
 let drag=null, pan=null;
-function startDrag(ev,n){ ev.stopPropagation(); ev.preventDefault();
-  drag={n, }; n.fx=n.x; n.fy=n.y; alpha=Math.max(alpha,0.3); if(!raf)tick(); }
+function startDrag(ev,n){ ev.stopPropagation(); ev.preventDefault(); drag={n}; }
 svg.addEventListener("mousedown",ev=>{ pan={x:ev.clientX,y:ev.clientY,vx:view.x,vy:view.y};
   svg.classList.add("panning"); });
 window.addEventListener("mousemove",ev=>{
-  if(drag){ const p=toSvg(ev.clientX,ev.clientY); drag.n.fx=p.x; drag.n.fy=p.y; }
+  if(drag){ const p=toSvg(ev.clientX,ev.clientY); drag.n.x=p.x; drag.n.y=p.y; positions(); }
   else if(pan){ const r=svg.getBoundingClientRect();
     view.x=pan.vx-(ev.clientX-pan.x)/r.width*view.w;
     view.y=pan.vy-(ev.clientY-pan.y)/r.height*view.h; setView(); }
 });
-window.addEventListener("mouseup",()=>{ if(drag){drag.n.fx=null;drag.n.fy=null;}
-  drag=null; pan=null; svg.classList.remove("panning"); });
+window.addEventListener("mouseup",()=>{ drag=null; pan=null;
+  svg.classList.remove("panning"); });
 svg.addEventListener("click",()=>clearSelect());
 
 /* --- filters --- */
