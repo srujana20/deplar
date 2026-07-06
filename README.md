@@ -223,6 +223,26 @@ deplar impact payments-service --symbol charge          # markdown
 deplar impact payments-service --json -o impact.json    # machine-readable
 ```
 
+### Agentic loops (optional — needs an API key)
+
+With `pip install deplar[agent]` and `ANTHROPIC_API_KEY` set, two LLM-driven
+agents drive the graph tools themselves:
+
+```bash
+# Impact-analysis agent: describe a change in English, it queries the graph and
+# writes an impact report before any code is touched.
+deplar impact-agent "change the getUser signature in payments-service"
+
+# Planner + validator (dual-agent): planner drafts a coordinated change plan
+# across affected repos; validator re-queries the graph for coverage and runs
+# every repo's tests in the workspace, then returns a verdict.
+deplar validate-agent "new charge API" --workspace ./workspace
+```
+
+Both are thin loops over the same read-only graph tools the MCP server exposes;
+the deterministic `deplar impact` / `deplar verify-workspace` commands cover the
+same ground without an API key.
+
 ### Validate a workspace after edits
 
 Re-run every repo's tests across a coordinated workspace (auto-detects pytest,
@@ -344,10 +364,10 @@ With deplar:
 - [x] SQLite symbol/graph store + `deplar query`
 - [x] MCP server — expose knowledge graph to agents
 - [x] Multi-repo git-worktree checkout (`deplar workspace`)
-- [x] Impact reports (`deplar impact`)
-- [x] Symbol-aware CLAUDE.md v2 (signatures + line numbers + learned patterns)
+- [x] Impact reports (`deplar impact`) + LLM impact agent (`deplar impact-agent`)
+- [x] Symbol-aware CLAUDE.md v2 (signatures, line numbers, cross-repo call sites, learned patterns)
 - [x] Agent memory layer (`deplar remember` / `recall`, persisted in the store)
-- [x] Cross-repo workspace validator (`deplar verify-workspace`)
+- [x] Cross-repo workspace validator (`deplar verify-workspace`) + planner/validator agent (`deplar validate-agent`)
 - [x] SKILL.md generator + skillhub portal (`deplar skill` / `deplar skillhub`)
 - [x] Interactive graph UI (`deplar ui` static file / `deplar serve` live)
 - [ ] Go support
@@ -365,6 +385,7 @@ deplar/
                         #   impact, workspace, verify-workspace, remember, recall,
                         #   skill, skillhub, mcp
     mcp_server.py       # FastMCP server exposing the knowledge graph
+    agent.py            # LLM tool-use loops: impact agent + planner/validator
     ui.py               # interactive graph UI (static file + stdlib server)
     worktree.py         # multi-repo git-worktree checkout
     impact.py           # structured impact reports (blast radius, call sites)

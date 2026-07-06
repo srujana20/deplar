@@ -79,9 +79,10 @@ class ClaudeMdGenerator:
         else:
             lines.append("- no downstream dependents detected")
 
-        # v2: public API surface + learned patterns from the symbol store
+        # v2: public API surface, cross-repo call sites + learned patterns
         if self.store is not None:
             lines.extend(self._api_surface_section())
+            lines.extend(self._call_sites_section())
             lines.extend(self._learned_patterns_section())
 
         # instructions for the agent
@@ -124,6 +125,45 @@ class ClaudeMdGenerator:
                 f"- [{s['kind']}] {marker} — {s['file']}:{s['start_line']}"
             )
         return lines
+
+    def _call_sites_section(self, limit: int = 25) -> list[str]:
+        """Where this repo's public symbols are called from *other* repos.
+
+        This is the "OrderService.java:47 is called by checkout-service at
+        line 23" signal — the concrete line numbers an agent needs before
+        changing a signature.
+        """
+        symbols = self.store.symbols_for_repo(
+            self.repo_name, kinds=["class", "interface", "method", "function"],
+            limit=200,
+        )
+        rows: list[str] = []
+        seen: set = set()
+        for s in symbols:
+            for c in self.store.get_callers(s["name"]):
+                if c["repo"] == self.repo_name:
+                    continue
+                key = (s["name"], c["repo"], c["file"], c["line"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(
+                    f"- `{s['name']}` ← {c['repo']}/{c['file']}:{c['line']} "
+                    f"(in {c['caller']})"
+                )
+                if len(rows) >= limit:
+                    break
+            if len(rows) >= limit:
+                break
+
+        if not rows:
+            return []
+        return [
+            "\n## Cross-repo call sites",
+            "External callers of this repo's symbols — update these together "
+            "when changing a signature:",
+            *rows,
+        ]
 
     def _learned_patterns_section(self) -> list[str]:
         notes = self.store.recall(self.repo_name)

@@ -33,6 +33,9 @@ dev = [
     "pytest-cov>=5",
     "pyyaml>=6",
 ]
+agent = [
+    "anthropic>=0.69",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

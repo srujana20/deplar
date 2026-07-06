@@ -646,6 +646,90 @@ def identities(
         console.print("  [dim]no identities recorded — run deplar scan[/dim]")
 
 
+@app.command("impact-agent")
+def impact_agent(
+    change: str = typer.Argument(..., help="Natural-language description of the proposed change"),
+    db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
+    model: str = typer.Option("claude-opus-4-8", "--model"),
+):
+    """LLM agent: query the graph for a proposed change and write an impact report."""
+    from deplar.agent import ImpactAgent, default_client
+
+    store_path = Path(db)
+    if not store_path.exists():
+        console.print(f"[red]Store not found: {db}[/red]  Run [bold]deplar scan-org[/bold] first.")
+        raise typer.Exit(1)
+
+    store = SymbolStore(store_path)
+    try:
+        agent = ImpactAgent(store, client=default_client(), model=model)
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        store.close()
+        raise typer.Exit(1)
+
+    console.print(f"\n[bold]Impact agent[/bold] analyzing: [cyan]{change}[/cyan]\n")
+    try:
+        with console.status("thinking + querying the graph..."):
+            run = agent.run(change, on_event=lambda e: console.print(f"  [dim]→ {e}[/dim]"))
+    except Exception as e:
+        console.print(f"[red]Agent failed:[/red] {e}")
+        store.close()
+        raise typer.Exit(1)
+    store.close()
+
+    if run.refused:
+        console.print("[yellow]The model declined to answer this request.[/yellow]")
+        raise typer.Exit(1)
+    console.print()
+    console.print(run.text)
+    console.print(f"\n[dim]({run.iterations} steps, {len(run.tool_calls)} tool calls)[/dim]\n")
+
+
+@app.command("validate-agent")
+def validate_agent(
+    change: str = typer.Argument(..., help="Description of the change being validated"),
+    workspace: str = typer.Option("./workspace", "--workspace", "-w"),
+    test_cmd: str = typer.Option("", "--test-cmd", help="Override test command for all repos"),
+    db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
+    model: str = typer.Option("claude-opus-4-8", "--model"),
+):
+    """Dual-agent: planner drafts a coordinated change plan, validator re-queries
+    the graph and runs tests across the workspace, then returns a verdict."""
+    from deplar.agent import PlannerValidator, default_client
+
+    store_path = Path(db)
+    if not store_path.exists():
+        console.print(f"[red]Store not found: {db}[/red]  Run [bold]deplar scan-org[/bold] first.")
+        raise typer.Exit(1)
+
+    store = SymbolStore(store_path)
+    try:
+        pv = PlannerValidator(store, client=default_client(), model=model)
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        store.close()
+        raise typer.Exit(1)
+
+    console.print(f"\n[bold]Planner/validator[/bold] for: [cyan]{change}[/cyan]\n")
+    try:
+        with console.status("planner + validator working..."):
+            run = pv.run(change, Path(workspace), test_cmd=test_cmd or None,
+                         on_event=lambda e: console.print(f"  [dim]→ {e}[/dim]"))
+    except Exception as e:
+        console.print(f"[red]Agent failed:[/red] {e}")
+        store.close()
+        raise typer.Exit(1)
+    store.close()
+
+    console.print("\n[bold]— Change plan (planner) —[/bold]\n")
+    console.print(run.plan)
+    console.print("\n[bold]— Validation verdict (validator) —[/bold]\n")
+    console.print(run.verdict)
+    console.print(f"\n[dim](planner {run.planner_iterations} steps, "
+                  f"validator {run.validator_iterations} steps)[/dim]\n")
+
+
 @app.command()
 def ui(
     output: str = typer.Option("deplar-ui.html", "--output", "-o"),
