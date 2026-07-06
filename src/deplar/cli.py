@@ -647,6 +647,62 @@ def identities(
 
 
 @app.command()
+def ui(
+    output: str = typer.Option("deplar-ui.html", "--output", "-o"),
+    db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
+    open_browser: bool = typer.Option(False, "--open", help="Open in a browser"),
+):
+    """Generate a self-contained interactive dependency-map UI (single HTML file)."""
+    from deplar.ui import build_ui_data, render_html
+
+    store_path = Path(db)
+    if not store_path.exists():
+        console.print(f"[red]Store not found: {db}[/red]  Run [bold]deplar scan-org[/bold] first.")
+        raise typer.Exit(1)
+    store = SymbolStore(store_path)
+    data = build_ui_data(store)
+    store.close()
+
+    out_path = Path(output)
+    out_path.write_text(render_html(data, served=False))
+    console.print(f"\n✓ Wrote [bold]{out_path}[/bold] "
+                  f"[dim]({len(data['nodes'])} services, {len(data['edges'])} deps)[/dim]")
+    console.print("  Open it in any browser — no server needed.\n")
+    if open_browser:
+        import webbrowser
+        webbrowser.open(out_path.resolve().as_uri())
+
+
+@app.command()
+def serve(
+    db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8000, "--port", "-p"),
+    open_browser: bool = typer.Option(True, "--open/--no-open"),
+):
+    """Serve the interactive UI locally with live data + a reconcile action."""
+    from deplar.ui import serve as make_server
+
+    store_path = Path(db)
+    if not store_path.exists():
+        console.print(f"[red]Store not found: {db}[/red]  Run [bold]deplar scan-org[/bold] first.")
+        raise typer.Exit(1)
+
+    httpd = make_server(store_path, host=host, port=port)
+    url = f"http://{host}:{port}"
+    console.print(f"\n[bold]deplar UI[/bold] → [cyan]{url}[/cyan]  [dim](Ctrl-C to stop)[/dim]\n")
+    if open_browser:
+        import webbrowser
+        webbrowser.open(url)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        console.print("\nstopped.\n")
+    finally:
+        httpd.server_close()
+
+
+@app.command()
 def mcp(
     db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
     skills: str = typer.Option("skillhub", "--skills", help="Skillhub registry dir"),

@@ -255,6 +255,23 @@ deplar skillhub --out ./skillhub               # all repos + a browsable portal
 `deplar skillhub` writes `<repo>/SKILL.md` per repo, an `index.json` registry,
 and a self-contained `index.html` portal (search by repo or language).
 
+### Visual UI
+
+An interactive, force-directed dependency map — click a node to see its
+dependents, dependencies, blast radius, and API surface. Two ways to open it:
+
+```bash
+deplar ui --open                 # self-contained HTML file (offline, no server)
+deplar serve                     # local server with live data + a Reconcile button
+```
+
+The static file (`deplar ui`) embeds the data and has no external dependencies —
+double-click to open anywhere. `deplar serve` (stdlib only, no extra installs)
+serves the same page against the live store and adds a one-click **Reconcile**
+action. Real repos and unresolved/external targets are colored distinctly;
+search, a confidence-threshold slider, and a "hide external" toggle keep large
+graphs readable.
+
 ### MCP server
 
 Expose the knowledge graph to agents over MCP:
@@ -332,6 +349,7 @@ With deplar:
 - [x] Agent memory layer (`deplar remember` / `recall`, persisted in the store)
 - [x] Cross-repo workspace validator (`deplar verify-workspace`)
 - [x] SKILL.md generator + skillhub portal (`deplar skill` / `deplar skillhub`)
+- [x] Interactive graph UI (`deplar ui` static file / `deplar serve` live)
 - [ ] Go support
 - [ ] Code embeddings + hybrid search
 - [ ] Skillhub web portal with RAG-powered search (currently a static portal)
@@ -347,6 +365,7 @@ deplar/
                         #   impact, workspace, verify-workspace, remember, recall,
                         #   skill, skillhub, mcp
     mcp_server.py       # FastMCP server exposing the knowledge graph
+    ui.py               # interactive graph UI (static file + stdlib server)
     worktree.py         # multi-repo git-worktree checkout
     impact.py           # structured impact reports (blast radius, call sites)
     validator.py        # cross-repo workspace test runner
