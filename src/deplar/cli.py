@@ -578,6 +578,53 @@ def reconcile(
 
 
 @app.command()
+def alias(
+    repo: str = typer.Argument(..., help="Repo to pin an identity to"),
+    name: str = typer.Argument(..., help="Name/hostname/URL others refer to it by"),
+    remove: bool = typer.Option(False, "--remove", help="Remove this pin instead"),
+    reconcile_now: bool = typer.Option(False, "--reconcile",
+                                       help="Re-run reconciliation immediately"),
+    db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
+):
+    """Manually pin an identity to a repo (a safety valve for cases the matcher
+    misses). Manual pins have full confidence and survive re-scans."""
+    store_path = Path(db)
+    if not store_path.exists():
+        console.print(f"[red]Store not found: {db}[/red]  Run [bold]deplar scan[/bold] first.")
+        raise typer.Exit(1)
+
+    store = SymbolStore(store_path)
+    if remove:
+        ok = store.remove_alias(repo, name)
+        console.print(
+            f"{'✓ Removed' if ok else '⚠ No such'} pin [white]{name}[/white] "
+            f"for [cyan]{repo}[/cyan]"
+        )
+    else:
+        norm = store.add_alias(repo, name)
+        if not norm:
+            console.print(f"[red]'{name}' normalizes to nothing — nothing pinned.[/red]")
+            store.close()
+            raise typer.Exit(1)
+        console.print(
+            f"✓ Pinned [cyan]{repo}[/cyan] is also known as "
+            f"[white]{name}[/white] [dim](matches as '{norm}')[/dim]"
+        )
+
+    if reconcile_now:
+        from deplar.scanner.reconciler import AliasCatalog, Reconciler
+        catalog = AliasCatalog.from_aliases(store.all_aliases())
+        resolved, stats = Reconciler().reconcile(store.all_dependencies(), catalog)
+        store.clear_dependencies()
+        store.replace_dependencies(resolved)
+        console.print(f"  reconciled: [green]{stats.resolved} resolved[/green], "
+                      f"{stats.merged} merged, {stats.dropped_self} self-refs dropped")
+    else:
+        console.print("  [dim]run `deplar reconcile` to apply.[/dim]")
+    store.close()
+
+
+@app.command()
 def identities(
     repo: str = typer.Argument(..., help="Repo to show the identity catalog for"),
     db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),

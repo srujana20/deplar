@@ -93,6 +93,14 @@ deplar scan ./orders              # declares identity "order-mgmt-svc" via packa
 deplar reconcile                  # binds checkout -> orders automatically
 ```
 
+For the rare case the matcher can't infer (e.g. an internal codename), pin it
+once — the override has full confidence and **survives re-scans**:
+
+```bash
+deplar alias orders neptune --reconcile   # "orders is also known as neptune"
+deplar alias orders neptune --remove      # unpin
+```
+
 ---
 
 ## Installation

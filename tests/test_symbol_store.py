@@ -65,3 +65,35 @@ def test_repo_path_roundtrip(tmp_path):
     store.upsert_repo("svc", "/repos/svc", "2026-01-01T00:00:00Z")
     assert store.repo_path("svc") == "/repos/svc"
     assert store.repo_path("missing") is None
+
+
+# --- manual alias override ---
+
+def test_add_and_remove_manual_alias(tmp_path):
+    store = _store(tmp_path)
+    alias = store.add_alias("billing", "https://neptune.internal/api")
+    assert alias == "neptune"
+    rows = {a["alias"]: a for a in store.aliases_for_repo("billing")}
+    assert rows["neptune"]["source"] == "manual"
+    assert rows["neptune"]["confidence"] == 1.0
+    # remove by raw or by normalized form
+    assert store.remove_alias("billing", "https://neptune.internal/api") is True
+    assert store.aliases_for_repo("billing") == []
+    assert store.remove_alias("billing", "neptune") is False
+
+
+def test_manual_alias_survives_rescan(tmp_path):
+    store = _store(tmp_path)
+    store.add_alias("billing", "neptune")
+    # a re-scan replaces auto aliases but must keep the manual pin
+    store.replace_aliases("billing", [
+        {"alias": "billing", "raw": "billing", "source": "config", "confidence": 1.0},
+    ])
+    aliases = {a["alias"]: a["source"] for a in store.aliases_for_repo("billing")}
+    assert aliases == {"billing": "config", "neptune": "manual"}
+
+
+def test_empty_alias_not_pinned(tmp_path):
+    store = _store(tmp_path)
+    assert store.add_alias("billing", "https://") == ""
+    assert store.aliases_for_repo("billing") == []

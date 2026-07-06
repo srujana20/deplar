@@ -150,9 +150,14 @@ class SymbolStore:
     # --- identity catalog (what each repo advertises itself as) ---
 
     def replace_aliases(self, repo: str, aliases: List[dict]):
-        """Replace a repo's identity aliases. Each item: {alias, raw, source, confidence}."""
+        """Replace a repo's *auto-extracted* aliases (from a re-scan).
+
+        Manual overrides are preserved — a human pin set once survives rescans.
+        Each item: {alias, raw, source, confidence}.
+        """
         cur = self.conn.cursor()
-        cur.execute("DELETE FROM aliases WHERE repo = ?", (repo,))
+        cur.execute("DELETE FROM aliases WHERE repo = ? AND source != 'manual'",
+                    (repo,))
         cur.executemany(
             "INSERT OR REPLACE INTO aliases(repo, alias, raw, source, confidence) "
             "VALUES (?,?,?,?,?)",
@@ -160,6 +165,32 @@ class SymbolStore:
               a.get("confidence", 0.8)) for a in aliases if a.get("alias")],
         )
         self.conn.commit()
+
+    def add_alias(self, repo: str, raw: str, source: str = "manual",
+                  confidence: float = 1.0) -> str:
+        """Pin an identity to a repo (survives rescans). Returns the normalized alias."""
+        from deplar.scanner.identity import normalize_identity
+        alias = normalize_identity(raw)
+        if not alias:
+            return ""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO aliases(repo, alias, raw, source, confidence) "
+            "VALUES (?,?,?,?,?)",
+            (repo, alias, raw, source, confidence),
+        )
+        self.conn.commit()
+        return alias
+
+    def remove_alias(self, repo: str, raw_or_alias: str) -> bool:
+        """Unpin an alias. Accepts either the raw value or its normalized form."""
+        from deplar.scanner.identity import normalize_identity
+        alias = normalize_identity(raw_or_alias)
+        cur = self.conn.execute(
+            "DELETE FROM aliases WHERE repo = ? AND (alias = ? OR raw = ?)",
+            (repo, alias, raw_or_alias),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
 
     def all_aliases(self) -> List[dict]:
         rows = self.conn.execute(
