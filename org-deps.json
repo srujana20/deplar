@@ -1,9 +1,9 @@
 {
   "version": "1.0",
-  "scanned_at": "2026-06-23T13:10:22.183568+00:00",
+  "scanned_at": "2026-06-23T13:14:16.876745+00:00",
   "repo": {
-    "name": "order-service",
-    "path": "C:\\Users\\Bujji\\Documents\\code\\deplar\\tests\\fixtures\\sample_repo",
+    "name": "",
+    "path": "",
     "primary_language": ""
   },
   "dependencies": [
@@ -124,17 +124,113 @@
         }
       ],
       "metadata": {}
+    },
+    {
+      "from": "payments-service",
+      "to": "paymentsclient",
+      "types": [
+        "import"
+      ],
+      "confidence": 0.6,
+      "evidence": [
+        {
+          "file": "OrderService.java",
+          "line": 1,
+          "snippet": ""
+        }
+      ],
+      "metadata": {}
+    },
+    {
+      "from": "payments-service",
+      "to": "userservice",
+      "types": [
+        "import"
+      ],
+      "confidence": 0.6,
+      "evidence": [
+        {
+          "file": "OrderService.java",
+          "line": 2,
+          "snippet": ""
+        }
+      ],
+      "metadata": {}
+    },
+    {
+      "from": "payments-service",
+      "to": "orders.created",
+      "types": [
+        "kafka"
+      ],
+      "confidence": 1.0,
+      "evidence": [
+        {
+          "file": "events.py",
+          "line": 6,
+          "snippet": ""
+        }
+      ],
+      "metadata": {}
+    },
+    {
+      "from": "payments-service",
+      "to": "orders.failed",
+      "types": [
+        "kafka"
+      ],
+      "confidence": 1.0,
+      "evidence": [
+        {
+          "file": "events.py",
+          "line": 7,
+          "snippet": ""
+        }
+      ],
+      "metadata": {}
+    },
+    {
+      "from": "payments-service",
+      "to": "f\"{url}",
+      "types": [
+        "http"
+      ],
+      "confidence": 0.4,
+      "evidence": [
+        {
+          "file": "payments_client.py",
+          "line": 15,
+          "snippet": ""
+        }
+      ],
+      "metadata": {}
+    },
+    {
+      "from": "payments-service",
+      "to": "f\"{base}",
+      "types": [
+        "http"
+      ],
+      "confidence": 0.4,
+      "evidence": [
+        {
+          "file": "payments_client.py",
+          "line": 21,
+          "snippet": ""
+        }
+      ],
+      "metadata": {}
     }
   ],
   "summary": {
-    "total_deps": 7,
-    "high_confidence": 3,
+    "total_deps": 13,
+    "high_confidence": 5,
     "services_called": [
       "paymentsclient",
       "userservice",
-      "payments-service",
       "orders.created",
-      "orders.failed"
+      "orders.failed",
+      "f\"{url}"
     ],
     "services_calling_me": []
   }

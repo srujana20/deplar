@@ -1,0 +1,7 @@
+repos:
+  - path: ./order-service
+    name: order-service
+  - path: ./payment-service
+    name: payment-service
+  - path: ./user-service
+    name: user-service

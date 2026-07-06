@@ -1,11 +1,12 @@
-from pathlib import Path
-from dataclasses import dataclass, field
-from typing import List, Literal
 import re
-from deplar.scanner.walker import FileMap
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Literal
 
 import tree_sitter_python as tspython
-from tree_sitter import Language, Parser, Node
+from tree_sitter import Language, Node, Parser
+
+from deplar.scanner.walker import FileMap
 
 PY_LANGUAGE = Language(tspython.language())
 

@@ -1,7 +1,7 @@
-from pathlib import Path
-from sys import path
-from typing import List, Dict
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List
+
 import pathspec
 
 LANGUAGE_EXTENSIONS = {

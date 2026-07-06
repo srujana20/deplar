@@ -1,9 +1,9 @@
-from pathlib import Path
-from dataclasses import dataclass, field
-from typing import List, Literal
-from deplar.scanner.ast_parser import ImportEdge, FeignClientEdge
-from deplar.scanner.network_detector import NetworkCallEdge
 import re
+from dataclasses import dataclass, field
+from typing import List
+
+from deplar.scanner.ast_parser import FeignClientEdge, ImportEdge
+from deplar.scanner.network_detector import NetworkCallEdge
 
 
 @dataclass
