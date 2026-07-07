@@ -1,6 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 import tree_sitter_java as tsjava
 import tree_sitter_python as tspython
@@ -31,6 +31,8 @@ class FeignClientEdge:
     url_pattern: str
     declared_in: str
     line_number: int
+    # method-level surfaces this client calls: (VERB, /path) e.g. ("GET", "/v1/users/{id}")
+    surfaces: List[Tuple[str, str]] = field(default_factory=list)
 
 
 def _node_text(node: Node, source: bytes) -> str:
@@ -187,6 +189,57 @@ def parse_typescript_imports(path: Path, tsx: bool = False) -> List[ImportEdge]:
     return edges
 
 
+_FEIGN_METHOD_ANNOS = {
+    "GetMapping": "GET", "PostMapping": "POST", "PutMapping": "PUT",
+    "DeleteMapping": "DELETE", "PatchMapping": "PATCH",
+}
+
+
+def _mapping_path(args_text: str) -> str:
+    import re
+    m = re.search(r'(?:value|path)\s*=\s*"([^"]+)"', args_text)
+    if m:
+        return m.group(1)
+    m = re.search(r'"([^"]+)"', args_text)
+    return m.group(1) if m else ""
+
+
+def _feign_surfaces(iface: Node, source: bytes) -> List[Tuple[str, str]]:
+    """Collect (verb, path) from the mapping annotations on an interface's
+    methods — these are the endpoints the Feign client actually calls."""
+    import re
+    surfaces: List[Tuple[str, str]] = []
+    body = iface.child_by_field_name("body")
+    if body is None:
+        return surfaces
+    def annotations(decl: Node):
+        for c in decl.children:
+            if c.type in ("marker_annotation", "annotation"):
+                yield c
+            elif c.type == "modifiers":
+                for m in c.children:
+                    if m.type in ("marker_annotation", "annotation"):
+                        yield m
+
+    for member in body.children:
+        if member.type not in ("method_declaration", "interface_method_declaration"):
+            continue
+        for c in annotations(member):
+            name_node = c.child_by_field_name("name")
+            if not name_node:
+                continue
+            aname = _node_text(name_node, source)
+            args = c.child_by_field_name("arguments")
+            args_text = _node_text(args, source) if args else ""
+            if aname in _FEIGN_METHOD_ANNOS:
+                surfaces.append((_FEIGN_METHOD_ANNOS[aname], _mapping_path(args_text)))
+            elif aname == "RequestMapping":
+                verb_m = re.search(r'RequestMethod\.(\w+)', args_text)
+                verb = verb_m.group(1).upper() if verb_m else "ANY"
+                surfaces.append((verb, _mapping_path(args_text)))
+    return surfaces
+
+
 def parse_feign_clients(path: Path) -> List[FeignClientEdge]:
     import re
 
@@ -195,18 +248,27 @@ def parse_feign_clients(path: Path) -> List[FeignClientEdge]:
     tree = parser.parse(source)
     edges: List[FeignClientEdge] = []
 
-    def walk(node: Node, current_class: str = ""):
-        if node.type == "class_declaration":
-            for child in node.children:
-                if child.type == "identifier":
-                    current_class = _node_text(child, source)
+    def feign_annotation(decl: Node) -> Node | None:
+        for child in decl.children:
+            if child.type in ("marker_annotation", "annotation", "modifiers"):
+                # annotations may be wrapped in a `modifiers` node
+                candidates = ([child] if child.type != "modifiers"
+                              else list(child.children))
+                for c in candidates:
+                    name_node = c.child_by_field_name("name")
+                    if name_node and _node_text(name_node, source) == "FeignClient":
+                        return c
+        return None
 
-        if node.type in ("marker_annotation", "annotation"):
-            name_node = node.child_by_field_name("name")
-            if name_node and _node_text(name_node, source) == "FeignClient":
+    def walk(node: Node):
+        if node.type in ("interface_declaration", "class_declaration"):
+            anno = feign_annotation(node)
+            if anno is not None:
+                name_node = node.child_by_field_name("name")
+                declared_in = _node_text(name_node, source) if name_node else ""
                 client_name = ""
                 url_pattern = ""
-                args = node.child_by_field_name("arguments")
+                args = anno.child_by_field_name("arguments")
                 if args:
                     text = _node_text(args, source)
                     name_match = re.search(r'name\s*=\s*"([^"]+)"', text)
@@ -219,12 +281,12 @@ def parse_feign_clients(path: Path) -> List[FeignClientEdge]:
                     source_file=path,
                     client_name=client_name,
                     url_pattern=url_pattern,
-                    declared_in=current_class,
-                    line_number=node.start_point[0] + 1,
+                    declared_in=declared_in,
+                    line_number=anno.start_point[0] + 1,
+                    surfaces=_feign_surfaces(node, source),
                 ))
-
         for child in node.children:
-            walk(child, current_class)
+            walk(child)
 
     walk(tree.root_node)
     return edges

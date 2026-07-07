@@ -19,6 +19,7 @@ class DependencyGraph:
             dep_types=edge.dep_types,
             confidence=edge.confidence,
             evidence=edge.evidence,
+            surfaces=getattr(edge, "surfaces", []),
         )
 
     def get_dependencies(self, repo: str) -> List[str]:
@@ -66,12 +67,14 @@ class DependencyGraph:
                 else:
                     evidence.append({"file": e, "line": 0, "snippet": ""})
 
+            surfaces = data.get("surfaces", []) or []
             deps.append({
                 "from":       u,
                 "to":         v,
                 "types":      data.get("dep_types", []),
                 "confidence": data.get("confidence", 0.0),
                 "evidence":   evidence,
+                "surfaces":   surfaces,
                 "metadata":   {},
             })
 

@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import List
 
 from deplar.scanner.ast_parser import FeignClientEdge, ImportEdge
+from deplar.scanner.endpoints import endpoint_key
 from deplar.scanner.network_detector import NetworkCallEdge
 
 
@@ -13,6 +14,9 @@ class DependencyEdge:
     dep_types: List[str]
     confidence: float
     evidence: List[str] = field(default_factory=list)
+    # HTTP surfaces the consumer hits on the provider; each is
+    # {"channel","method","path","key","matched","evidence"}.
+    surfaces: List[dict] = field(default_factory=list)
 
 
 def _normalize(name: str) -> str:
@@ -51,7 +55,8 @@ class DependencyResolver:
         # bucket by (from, to) key
         buckets: dict[str, DependencyEdge] = {}
 
-        def add(to: str, dep_type: str, confidence: float, evidence: str):
+        def add(to: str, dep_type: str, confidence: float, evidence: str,
+                surface: dict | None = None):
             to = _normalize(to) if dep_type == "import" else to
             key = f"{repo_name}::{to}"
             if key not in buckets:
@@ -67,6 +72,13 @@ class DependencyResolver:
                 e.dep_types.append(dep_type)
             e.confidence = max(e.confidence, confidence)
             e.evidence.append(evidence)
+            if surface and surface not in e.surfaces:
+                e.surfaces.append(surface)
+
+        def surface(method: str, path: str, evidence: str) -> dict:
+            return {"channel": "http", "method": (method or "ANY"), "path": path,
+                    "key": endpoint_key(method, path), "matched": False,
+                    "evidence": evidence}
 
         for e in import_edges:
             add(e.imported_module, "import", 0.6,
@@ -74,13 +86,19 @@ class DependencyResolver:
 
         for e in feign_edges:
             target = e.client_name or _extract_service_from_url(e.url_pattern)
-            add(target, "feign", 0.95,
-                f"{e.source_file.name}:{e.line_number}")
+            ev = f"{e.source_file.name}:{e.line_number}"
+            if e.surfaces:
+                for verb, spath in e.surfaces:
+                    add(target, "feign", 0.95, ev, surface(verb, spath, ev))
+            else:
+                add(target, "feign", 0.95, ev)
 
         for e in network_edges:
             target = _extract_service_from_url(e.target)
-            add(target, e.call_type, e.confidence,
-                f"{e.source_file.name}:{e.line_number}")
+            ev = f"{e.source_file.name}:{e.line_number}"
+            sfc = (surface(e.method, e.path, ev)
+                   if e.call_type == "http" and e.path else None)
+            add(target, e.call_type, e.confidence, ev, sfc)
 
         # filter out noise — stdlib, generic names
         noise = {"os", "sys", "re", "json", "path", "typing",

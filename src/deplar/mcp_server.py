@@ -111,16 +111,21 @@ def affected_repos(target: str, transitive: bool = False,
 
 
 @mcp.tool()
-def impact_report(target: str, symbol: str = "", depth: int = 3) -> dict:
-    """Structured impact report for a change to `target` (optionally a symbol).
+def impact_report(target: str, symbol: str = "", endpoint: str = "",
+                  depth: int = 3) -> dict:
+    """Structured impact report for a change to `target`.
 
-    Returns dependents, transitive blast radius, emitted events, and cross-repo
-    call sites — run this before editing to know what a change will ripple into.
+    Returns dependents (each with the HTTP endpoints it calls on `target`),
+    transitive blast radius, emitted events, and cross-repo call sites — run this
+    before editing to know what a change will ripple into. Pass `endpoint`
+    (e.g. "PUT /v1/orders/{id}") to scope the report to just the consumers of
+    that specific contract surface.
     """
     store = _store()
     try:
         report = ImpactAnalyzer(store).analyze(target, symbol=symbol or None,
-                                               depth=depth)
+                                               depth=depth,
+                                               endpoint=endpoint or None)
         return report.to_dict()
     finally:
         store.close()

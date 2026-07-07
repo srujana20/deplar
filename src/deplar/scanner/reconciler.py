@@ -138,12 +138,15 @@ class Reconciler:
                         existing.dep_types.append(t)
                 existing.confidence = min(1.0, max(existing.confidence, confidence))
                 existing.evidence.extend(evidence)
+                for s in edge.surfaces:
+                    if s not in existing.surfaces:
+                        existing.surfaces.append(s)
                 stats.merged += 1
             else:
                 merged[key] = DependencyEdge(
                     from_repo=edge.from_repo, to_repo=to,
                     dep_types=list(edge.dep_types), confidence=confidence,
-                    evidence=evidence,
+                    evidence=evidence, surfaces=[dict(s) for s in edge.surfaces],
                 )
 
         return list(merged.values()), stats

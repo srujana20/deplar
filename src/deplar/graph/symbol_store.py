@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS dependencies (
     dep_types  TEXT,
     confidence REAL,
     evidence   TEXT,
+    surfaces   TEXT,            -- JSON: HTTP endpoints the consumer hits on the provider
     PRIMARY KEY (from_repo, to_repo)
 );
 CREATE TABLE IF NOT EXISTS memory (
@@ -82,7 +83,15 @@ class SymbolStore:
         self.conn = sqlite3.connect(str(self.path))
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self):
+        """Add columns introduced after a DB was first created."""
+        cols = {r["name"] for r in
+                self.conn.execute("PRAGMA table_info(dependencies)").fetchall()}
+        if "surfaces" not in cols:
+            self.conn.execute("ALTER TABLE dependencies ADD COLUMN surfaces TEXT")
 
     # --- ingestion ---
 
@@ -121,18 +130,19 @@ class SymbolStore:
         for e in edges:
             cur.execute(
                 "INSERT INTO dependencies(from_repo, to_repo, dep_types, "
-                "confidence, evidence) VALUES (?,?,?,?,?) "
+                "confidence, evidence, surfaces) VALUES (?,?,?,?,?,?) "
                 "ON CONFLICT(from_repo, to_repo) DO UPDATE SET "
                 "dep_types=excluded.dep_types, confidence=excluded.confidence, "
-                "evidence=excluded.evidence",
+                "evidence=excluded.evidence, surfaces=excluded.surfaces",
                 (e.from_repo, e.to_repo, json.dumps(e.dep_types),
-                 e.confidence, json.dumps(e.evidence)),
+                 e.confidence, json.dumps(e.evidence),
+                 json.dumps(getattr(e, "surfaces", []))),
             )
         self.conn.commit()
 
     def all_dependencies(self) -> List[DependencyEdge]:
         rows = self.conn.execute(
-            "SELECT from_repo, to_repo, dep_types, confidence, evidence "
+            "SELECT from_repo, to_repo, dep_types, confidence, evidence, surfaces "
             "FROM dependencies"
         ).fetchall()
         return [
@@ -140,6 +150,7 @@ class SymbolStore:
                 from_repo=r["from_repo"], to_repo=r["to_repo"],
                 dep_types=json.loads(r["dep_types"]),
                 confidence=r["confidence"], evidence=json.loads(r["evidence"]),
+                surfaces=json.loads(r["surfaces"]) if r["surfaces"] else [],
             ) for r in rows
         ]
 
@@ -209,19 +220,23 @@ class SymbolStore:
 
     def get_dependencies(self, repo: str) -> List[dict]:
         rows = self.conn.execute(
-            "SELECT to_repo, dep_types, confidence FROM dependencies "
+            "SELECT to_repo, dep_types, confidence, surfaces FROM dependencies "
             "WHERE from_repo = ? ORDER BY confidence DESC", (repo,)
         ).fetchall()
         return [{"repo": r["to_repo"], "types": json.loads(r["dep_types"]),
-                 "confidence": r["confidence"]} for r in rows]
+                 "confidence": r["confidence"],
+                 "surfaces": json.loads(r["surfaces"]) if r["surfaces"] else []}
+                for r in rows]
 
     def get_dependents(self, repo: str) -> List[dict]:
         rows = self.conn.execute(
-            "SELECT from_repo, dep_types, confidence FROM dependencies "
+            "SELECT from_repo, dep_types, confidence, surfaces FROM dependencies "
             "WHERE to_repo = ? ORDER BY confidence DESC", (repo,)
         ).fetchall()
         return [{"repo": r["from_repo"], "types": json.loads(r["dep_types"]),
-                 "confidence": r["confidence"]} for r in rows]
+                 "confidence": r["confidence"],
+                 "surfaces": json.loads(r["surfaces"]) if r["surfaces"] else []}
+                for r in rows]
 
     def blast_radius(self, repo: str, depth: int = 3) -> List[str]:
         """Transitive set of repos that (in)directly depend on `repo`."""

@@ -10,12 +10,24 @@ from dataclasses import asdict, dataclass, field
 from typing import List, Optional
 
 from deplar.graph.symbol_store import SymbolStore
+from deplar.scanner.endpoints import endpoint_key
+
+
+def _split_endpoint(spec: Optional[str]) -> tuple:
+    """Parse a "METHOD /path" or bare "/path" endpoint spec into (method, path)."""
+    if not spec:
+        return "", ""
+    parts = spec.strip().split(None, 1)
+    if len(parts) == 2 and parts[0].isalpha():
+        return parts[0], parts[1]
+    return "", spec.strip()
 
 
 @dataclass
 class ImpactReport:
     target: str
     symbol: Optional[str]
+    endpoint: Optional[str] = None      # normalized key the change is scoped to
     direct_dependents: List[dict] = field(default_factory=list)
     blast_radius: List[str] = field(default_factory=list)
     events_emitted: List[str] = field(default_factory=list)
@@ -32,9 +44,29 @@ class ImpactAnalyzer:
         self.store = store
 
     def analyze(self, target: str, symbol: Optional[str] = None,
-                depth: int = 3) -> ImpactReport:
+                depth: int = 3, endpoint: Optional[str] = None) -> ImpactReport:
         dependents = self.store.get_dependents(target)
+
+        # Attach the HTTP endpoints each dependent calls on `target`, so a
+        # reviewer can see *which contract* couples them — not just that they do.
+        for d in dependents:
+            d["endpoints"] = sorted({
+                s.get("key", "") for s in d.get("surfaces", [])
+                if s.get("channel") == "http" and s.get("key")
+            })
+
+        # Endpoint-scoped impact: keep only dependents that call the changed
+        # surface. This is what makes "flag consumers of the changed endpoint"
+        # surgical instead of flagging every consumer of the repo.
+        want = endpoint_key(*_split_endpoint(endpoint)) if endpoint else None
+        if want:
+            dependents = [d for d in dependents if want in d.get("endpoints", [])]
+
         blast = self.store.blast_radius(target, depth=depth)
+        if want:
+            # transitive radius is only meaningful through the matched dependents
+            direct = {d["repo"] for d in dependents}
+            blast = [b for b in blast if b in direct] or []
 
         # Kafka topics this repo emits show up as kafka-typed dependencies.
         events = [
@@ -45,6 +77,7 @@ class ImpactAnalyzer:
         report = ImpactReport(
             target=target,
             symbol=symbol,
+            endpoint=want,
             direct_dependents=dependents,
             blast_radius=blast,
             events_emitted=sorted(events),
@@ -67,6 +100,8 @@ class ImpactAnalyzer:
         lines = [f"# Impact report — `{report.target}`"]
         if report.symbol:
             lines.append(f"> Change scoped to symbol `{report.symbol}`")
+        if report.endpoint:
+            lines.append(f"> Change scoped to endpoint `{report.endpoint}`")
         lines.append("")
 
         lines.append("## Directly affected (must update together)")
@@ -74,6 +109,8 @@ class ImpactAnalyzer:
             for d in report.direct_dependents:
                 types = ", ".join(d["types"])
                 lines.append(f"- **{d['repo']}** ({types}, {d['confidence']:.0%})")
+                for ep in d.get("endpoints", []):
+                    lines.append(f"    - calls `{ep}`")
         else:
             lines.append("- none detected")
 

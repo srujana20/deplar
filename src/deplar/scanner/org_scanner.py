@@ -12,6 +12,12 @@ from deplar.scanner.identity import extract_identities
 from deplar.scanner.network_detector import NetworkDetector
 from deplar.scanner.reconciler import AliasCatalog, Reconciler
 from deplar.scanner.resolver import DependencyEdge, DependencyResolver
+from deplar.scanner.route_detector import RouteDetector, RouteEdge
+from deplar.scanner.surface_matcher import (
+    RouteIndex,
+    SurfaceMatcher,
+    build_interface_manifest,
+)
 from deplar.scanner.symbols import SymbolExtractor, SymbolIndex
 from deplar.scanner.walker import RepoWalker
 
@@ -54,21 +60,25 @@ class OrgScanner:
         self.verbose = verbose
         self._parser = ASTParser()
         self._detector = NetworkDetector()
+        self._routes = RouteDetector()
         self._resolver = DependencyResolver()
         self._symbols = SymbolExtractor()
+        self.last_manifest: dict = {}
+        self.last_match_stats = None
 
     def scan_repo(self, config: RepoConfig) -> List[DependencyEdge]:
-        edges, _ = self.scan_repo_full(config)
+        edges, _, _ = self.scan_repo_full(config)
         return edges
 
     def scan_repo_full(
         self, config: RepoConfig
-    ) -> Tuple[List[DependencyEdge], SymbolIndex]:
+    ) -> Tuple[List[DependencyEdge], SymbolIndex, List[RouteEdge]]:
         walker = RepoWalker(config.path)
         file_map = walker.walk()
 
         import_edges, feign_edges = self._parser.parse(file_map)
         network_edges = self._detector.detect(file_map)
+        route_edges = self._routes.detect(file_map)
         symbol_index = self._symbols.extract(file_map, config.name)
 
         edges = self._resolver.resolve(
@@ -77,7 +87,7 @@ class OrgScanner:
             feign_edges,
             network_edges,
         )
-        return edges, symbol_index
+        return edges, symbol_index, route_edges
 
     def scan_org(
         self, org_config: OrgConfig, store: Optional[SymbolStore] = None
@@ -85,14 +95,18 @@ class OrgScanner:
         graph = DependencyGraph()
         all_edges: List[DependencyEdge] = []
         all_aliases: List[dict] = []
+        route_index = RouteIndex()
+        repo_names = [r.name for r in org_config.repos]
         now = dt.datetime.now(dt.timezone.utc).isoformat()
 
         for repo in org_config.repos:
             if self.verbose:
                 print(f"  scanning {repo.name}...")
             try:
-                edges, symbol_index = self.scan_repo_full(repo)
+                edges, symbol_index, route_edges = self.scan_repo_full(repo)
                 all_edges.extend(edges)
+                for r in route_edges:
+                    route_index.add(repo.name, r)
                 identities = [a.as_dict()
                               for a in extract_identities(repo.path, repo.name)]
                 all_aliases.extend({**a, "repo": repo.name} for a in identities)
@@ -107,6 +121,12 @@ class OrgScanner:
         # identity it matches (see reconciler.py), replacing folder-name guessing.
         catalog = AliasCatalog.from_aliases(all_aliases)
         resolved, self._last_stats = Reconciler().reconcile(all_edges, catalog)
+
+        # Surface matching: bind each consumer call to the concrete provider
+        # route it hits, and assemble the per-repo interface manifest.
+        self.last_match_stats = SurfaceMatcher().match(resolved, route_index)
+        self.last_manifest = build_interface_manifest(
+            repo_names, resolved, route_index)
 
         for edge in resolved:
             graph.add_dependency(edge)

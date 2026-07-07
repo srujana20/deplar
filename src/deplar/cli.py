@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import typer
@@ -246,9 +247,19 @@ def scan_org(
 
     store.close()
 
-    # save
+    # save org dependency graph
     out_path = Path(output)
     graph.save(out_path)
+
+    # save per-repo interface manifest (provides + consumes)
+    iface_path = out_path.with_name(
+        out_path.stem.replace("deps", "interfaces") + out_path.suffix
+        if "deps" in out_path.stem else out_path.stem + "-interfaces" + out_path.suffix
+    )
+    iface_path.write_text(json.dumps({
+        "version": "1.0",
+        "repos": scanner.last_manifest,
+    }, indent=2))
 
     # print summary
     summary = graph.summary()
@@ -258,6 +269,12 @@ def scan_org(
     table.add_row("[dim]Repos scanned[/dim]",      str(len(org_config.repos)))
     table.add_row("[dim]Total dependencies[/dim]",  str(summary["total_edges"]))
     table.add_row("[dim]Services in graph[/dim]",   str(summary["total_nodes"]))
+    ms = scanner.last_match_stats
+    if ms:
+        table.add_row("[dim]HTTP surfaces matched[/dim]",
+                      f"{ms.surfaces_matched}/{ms.surfaces_total}"
+                      + (f"  ({ms.surfaces_unmatched} unmatched)"
+                         if ms.surfaces_unmatched else ""))
     if summary["most_depended_on"]:
         table.add_row("[dim]Most depended on[/dim]",
                       ", ".join(summary["most_depended_on"][:3]))
@@ -265,7 +282,8 @@ def scan_org(
         table.add_row("[dim]Orphan services[/dim]",
                       ", ".join(summary["orphans"][:3]))
     console.print(table)
-    console.print(f"\n  Saved to [bold]{out_path}[/bold]\n")
+    console.print(f"\n  Saved deps to [bold]{out_path}[/bold]")
+    console.print(f"  Saved interfaces to [bold]{iface_path}[/bold]\n")
 
 
 @app.command()
@@ -391,6 +409,8 @@ def workspace(
 def impact(
     target: str = typer.Argument(..., help="Repo to analyze the impact of changing"),
     symbol: str = typer.Option("", "--symbol", "-s", help="Scope to a symbol name"),
+    endpoint: str = typer.Option("", "--endpoint", "-e",
+                                 help="Scope to an HTTP endpoint, e.g. 'PUT /v1/orders/{id}'"),
     depth: int = typer.Option(3, "--depth", help="Blast-radius depth"),
     db: str = typer.Option("deplar.db", "--db", help="SQLite symbol/graph store"),
     json_out: bool = typer.Option(False, "--json", help="Emit JSON instead of markdown"),
@@ -405,7 +425,8 @@ def impact(
         raise typer.Exit(1)
 
     store = SymbolStore(store_path)
-    report = ImpactAnalyzer(store).analyze(target, symbol=symbol or None, depth=depth)
+    report = ImpactAnalyzer(store).analyze(target, symbol=symbol or None,
+                                           depth=depth, endpoint=endpoint or None)
     store.close()
 
     if json_out:

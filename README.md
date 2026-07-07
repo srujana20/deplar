@@ -6,7 +6,7 @@
 
 **Dependency radar for multi-repo codebases.**
 
-deplar scans your repos and builds a precise, confidence-scored dependency map — detecting not just imports but actual HTTP calls, FeignClient annotations, gRPC stubs, and Kafka topics. It tells AI agents exactly what they'll break before they touch anything.
+deplar scans your repos and builds a precise, confidence-scored dependency map — detecting not just imports but actual HTTP calls, the REST/SOAP routes each service *provides*, FeignClient annotations, gRPC stubs, and Kafka topics. It matches a consumer's call to the exact endpoint it hits on the provider, so it tells AI agents exactly what they'll break — down to the individual API contract — before they touch anything.
 
 ```
 $ deplar scan ./order-service
@@ -53,17 +53,58 @@ deplar fixes that.
 
 ## How it works
 
-deplar combines three signal sources:
+deplar detects both what a service **consumes** and what it **provides**, then joins them across the corpus.
+
+**Consumes** (outbound calls):
 
 | Signal | Example | Confidence |
 |---|---|---|
-| FeignClient annotation | `@FeignClient(name="payments")` | 95% |
-| Literal HTTP call | `requests.post("https://payments-svc/charge")` | 100% |
-| Env var HTTP call | `httpx.get(os.getenv("USER_SVC_URL"))` | 70% |
+| Literal HTTP call | `requests.post("https://payments-svc/v1/charge")` | 100% |
+| FeignClient (Java) | `@FeignClient(name="payments")` + `@GetMapping("/v1/users/{id}")` | 95% |
+| RestTemplate / WebClient (Java) | `restTemplate.postForEntity(url, ...)`, `webClient.get().uri("/x")` | 100% |
+| Wrapped axios (JS/TS) | `const api = axios.create({baseURL}); api.get('/x')` | 100% |
+| Env var HTTP call | `httpx.get(os.getenv("USER_SVC_URL") + "/v1/x")` | 70% |
+| SOAP call | `webServiceTemplate.marshalSendAndReceive(uri, req)` | 100% |
 | Kafka producer | `producer.send("orders.created", ...)` | 100% |
 | Import statement | `from payments_client import Client` | 60% |
 
+**Provides** (inbound HTTP routes it serves):
+
+| Framework | Example |
+|---|---|
+| Spring MVC (Java) | `@RestController` + `@GetMapping("/v1/users/{id}")` |
+| JAX-RS (Java) | `@Path("/v1/accounts")` + `@GET @Path("/{id}")` |
+| Express / Fastify (JS/TS) | `router.get('/v1/users/:id', handler)` (+ `app.use('/api', router)` prefixes) |
+| NestJS (JS/TS) | `@Controller('users')` + `@Get(':id')` |
+| FastAPI / Flask (Py) | `@app.get("/v1/users/{id}")`, `@app.route("/x", methods=["POST"])` |
+
 Each dependency gets a confidence score. High confidence means a concrete runtime signal was found. Lower confidence means the tool found a likely signal that needs a human eye.
+
+---
+
+## API surface matching — endpoint-level impact
+
+deplar doesn't stop at "A depends on B." It folds every consumer call and every
+provider route to a canonical key (`GET /v1/orders/{}` — path params collapsed),
+then matches them. The result: it knows A calls B's *specific* `POST /v1/charge`,
+not just that A calls B.
+
+Two artifacts come out of a `scan-org`:
+
+- **`org-deps.json`** — the cross-repo edges, each carrying the matched `surfaces[]`.
+- **`org-interfaces.json`** — per repo, everything it `provides` and `consumes`.
+
+This makes impact analysis surgical. Scope a change to one endpoint and deplar
+flags **only** the consumers that call it — changing an endpoint nobody calls
+ripples to nobody:
+
+```bash
+deplar impact user-service --endpoint "GET /v1/users/{id}"
+#   Directly affected: payment-service — calls `GET /v1/users/{}`
+
+deplar impact user-service --endpoint "DELETE /v1/users/{id}"
+#   Directly affected: none detected
+```
 
 ---
 
