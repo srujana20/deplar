@@ -98,3 +98,13 @@ def test_ui_data_carries_surfaces_and_provides(tmp_path):
 def test_ui_html_renders_endpoint_widgets(tmp_path):
     html = render_html(build_ui_data(_surface_store(tmp_path)), served=False)
     assert "verbBadge" in html and "Provides — API endpoints" in html
+
+
+def test_ui_html_has_tabs_and_impact_links(tmp_path):
+    html = render_html(build_ui_data(_surface_store(tmp_path)), served=False)
+    # org vs single-repo tabs + repo picker
+    assert 'data-mode="org"' in html and 'data-mode="repo"' in html
+    assert 'id="reposel"' in html
+    # navigable impact links + impact section
+    assert "function rlink(" in html and "function goRepo(" in html
+    assert "Impact — if you change this" in html

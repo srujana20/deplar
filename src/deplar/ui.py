@@ -212,7 +212,7 @@ _TEMPLATE = r"""<!doctype html>
   .node.sel circle { stroke:#fff; stroke-width:3; filter:drop-shadow(0 0 6px var(--accent)); }
   .node text { fill:var(--txt); font-size:11px; font-weight:500; pointer-events:none;
                paint-order:stroke; stroke:var(--bg); stroke-width:3px; }
-  #bar { position:absolute; top:14px; left:14px; right:14px; display:flex; gap:9px;
+  #bar { position:absolute; top:60px; left:14px; right:14px; display:flex; gap:9px;
          align-items:center; flex-wrap:wrap; z-index:5; }
   #bar input[type=search]{ padding:8px 12px; border-radius:9px; border:1px solid var(--line);
          background:var(--panel); color:var(--txt); min-width:210px; outline:none; }
@@ -269,12 +269,35 @@ _TEMPLATE = r"""<!doctype html>
   .legend span { display:flex; align-items:center; gap:5px; }
   .swatch { width:9px; height:9px; border-radius:50%; }
   .sym-toggle { cursor:pointer; color:var(--accent); font-size:12px; user-select:none; }
+  /* view tabs */
+  #tabs { position:absolute; top:14px; left:14px; z-index:6; display:flex; gap:4px;
+          background:var(--panel); border:1px solid var(--line); border-radius:10px;
+          padding:4px; box-shadow:0 2px 8px rgba(0,0,0,.2); }
+  .tab { padding:6px 14px; border-radius:7px; font-size:12.5px; font-weight:600;
+         color:var(--muted); cursor:pointer; border:0; background:transparent; }
+  .tab.active { background:var(--accent); color:#fff; }
+  #repopick { display:none; }
+  #repopick select { padding:7px 10px; border-radius:9px; border:1px solid var(--line);
+         background:var(--panel); color:var(--txt); font-size:12px; }
+  /* clickable repo links in the panel */
+  .rlink { color:var(--accent); cursor:pointer; text-decoration:none; }
+  .rlink:hover { text-decoration:underline; }
+  .impact { background:rgba(240,115,106,.08); border:1px solid rgba(240,115,106,.3);
+            border-radius:11px; padding:10px 12px; margin-top:4px; }
+  .impact .lvl { font-size:11px; color:var(--muted); margin:6px 0 3px; }
 </style>
 </head>
 <body>
 <div id="app">
   <div id="graph">
+    <div id="tabs">
+      <button class="tab active" data-mode="org">Org graph</button>
+      <button class="tab" data-mode="repo">Single repo</button>
+    </div>
     <div id="bar">
+      <span id="repopick" class="pill">repo
+        <select id="reposel"></select>
+      </span>
       <input id="search" type="search" placeholder="Search repos…">
       <label class="pill">min conf
         <input id="conf" type="range" min="0" max="100" value="0"> <span id="confv">0%</span>
@@ -307,6 +330,7 @@ const SVGNS = "http://www.w3.org/2000/svg";
 const svg = document.getElementById("svg");
 let NODES=[], EDGES=[], byId={}, adjOut={}, adjIn={}, selected=null;
 let view={x:0,y:0,w:1000,h:800};
+let viewMode="org", focusRepo=null;   // "org" = whole graph, "repo" = one service + neighbours
 
 async function boot(){
   let data = EMBEDDED;
@@ -328,9 +352,17 @@ function build(data){
   EDGES.forEach(e=>{ adjOut[e.source].push(e.target); adjIn[e.target].push(e.source); });
   document.getElementById("stat").textContent =
     NODES.length + " services · " + EDGES.length + " deps";
+  populateRepoSelect();
   runLayout();     // settle synchronously so the first paint is stable
   render();
   fit();
+}
+
+function populateRepoSelect(){
+  const sel=document.getElementById("reposel");
+  const repos=NODES.filter(n=>!n.external).map(n=>n.id).sort();
+  sel.innerHTML = repos.map(r=>`<option value="${r}">${r}</option>`).join("");
+  if(!focusRepo && repos.length) focusRepo=repos[0];
 }
 
 /* --- force layout (synchronous, stability-guarded) --- */
@@ -399,8 +431,10 @@ function positions(){
 /* --- viewbox zoom/pan --- */
 function setView(){ svg.setAttribute("viewBox", `${view.x} ${view.y} ${view.w} ${view.h}`); }
 function fit(){
-  if(!NODES.length){ view={x:0,y:0,w:1000,h:800}; setView(); return; }
-  let xs=NODES.map(n=>n.x), ys=NODES.map(n=>n.y);
+  const vis=NODES.filter(n=>!nodeEls[n.id]||nodeEls[n.id].style.display!=="none");
+  const pts=vis.length?vis:NODES;
+  if(!pts.length){ view={x:0,y:0,w:1000,h:800}; setView(); return; }
+  let xs=pts.map(n=>n.x), ys=pts.map(n=>n.y);
   let minx=Math.min(...xs)-60,maxx=Math.max(...xs)+60,
       miny=Math.min(...ys)-60,maxy=Math.max(...ys)+60;
   view={x:minx,y:miny,w:Math.max(200,maxx-minx),h:Math.max(200,maxy-miny)};
@@ -433,22 +467,39 @@ svg.addEventListener("click",()=>clearSelect());
 /* --- filters --- */
 const confEl=document.getElementById("conf"), hideExtEl=document.getElementById("hideext"),
       showImpEl=document.getElementById("showimports"), searchEl=document.getElementById("search");
+function repoScope(){
+  // in repo mode, the visible set is the focused repo + the neighbours it is
+  // connected to by *visible* edges (respects the import / min-conf filters)
+  if(viewMode!=="repo" || !focusRepo) return null;
+  const showImp=showImpEl.checked, minc=+confEl.value/100;
+  const keep=new Set([focusRepo]);
+  EDGES.forEach(e=>{
+    if(e.source!==focusRepo && e.target!==focusRepo) return;
+    if(!showImp && e.import_only) return;
+    if(e.confidence<minc) return;
+    keep.add(e.source); keep.add(e.target);
+  });
+  return keep;
+}
 function applyFilters(){
   const minc=+confEl.value/100, hideExt=hideExtEl.checked,
         showImp=showImpEl.checked, q=searchEl.value.trim().toLowerCase();
+  const scope=repoScope();
   const degree={}; NODES.forEach(n=>degree[n.id]=0);
   edgeEls.forEach(ln=>{ const e=ln.__e;
     let show=e.confidence>=minc;
     if(!showImp && e.import_only) show=false;
     if(hideExt && (byId[e.target].external||byId[e.source].external)) show=false;
+    if(scope && !(scope.has(e.source)&&scope.has(e.target))) show=false;
     ln.style.display=show?"":"none";
     if(show){ degree[e.source]++; degree[e.target]++; }
   });
   NODES.forEach(n=>{
     const g=nodeEls[n.id]; let show=true;
     if(hideExt && n.external) show=false;
+    if(scope && !scope.has(n.id)) show=false;
     // drop external leaf nodes that lost all their edges (import noise)
-    if(n.external && degree[n.id]===0) show=false;
+    if(n.external && degree[n.id]===0 && !(scope&&scope.has(n.id))) show=false;
     g.style.display=show?"":"none";
     g.classList.toggle("dim", q && !n.id.toLowerCase().includes(q));
   });
@@ -460,6 +511,24 @@ confEl.addEventListener("input",()=>{ document.getElementById("confv").textConte
 hideExtEl.addEventListener("change",applyFilters);
 showImpEl.addEventListener("change",()=>{ applyFilters(); if(selected) selectNode(selected); });
 searchEl.addEventListener("input",applyFilters);
+
+/* --- view tabs (org graph vs single repo) --- */
+const reposel=document.getElementById("reposel");
+function setMode(mode){
+  viewMode=mode;
+  document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.mode===mode));
+  document.getElementById("repopick").style.display = mode==="repo"?"flex":"none";
+  if(mode==="repo"){
+    if(!focusRepo && reposel.options.length) focusRepo=reposel.value;
+    reposel.value=focusRepo;
+    applyFilters(); if(byId[focusRepo]) selectNode(byId[focusRepo]); fit();
+  } else {
+    clearSelect(); applyFilters(); fit();
+  }
+}
+document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click",()=>setMode(t.dataset.mode)));
+reposel.addEventListener("change",()=>{ focusRepo=reposel.value;
+  applyFilters(); if(byId[focusRepo]) selectNode(byId[focusRepo]); fit(); });
 document.getElementById("fit").addEventListener("click",fit);
 document.getElementById("reconcile").addEventListener("click",async()=>{
   const s=await (await fetch("api/reconcile",{method:"POST"})).json();
@@ -487,12 +556,22 @@ function epRow(method, path, matched, note){
   const dot = matched===null ? '' : `<i class="dot ${matched?'ok':'gap'}" title="${matched?'matched to a provider route':'no matching provider route'}"></i>`;
   return `<div class="ep">${verbBadge(method)}<code>${esc(path||'/')}</code>${dot}${note?`<span class="mini">${esc(note)}</span>`:''}</div>`;
 }
-/* group: a peer repo + the endpoints exchanged with it */
-function group(title, tag, conf, rowsHtml){
+/* group: a peer repo + the endpoints exchanged with it. titleHtml is trusted HTML. */
+function group(titleHtml, tag, conf, rowsHtml){
   const c = conf==null?'':`<span class="${conf>=0.8?'conf-hi':'conf-lo'}">${Math.round(conf*100)}%</span>`;
-  return `<div class="grp"><div class="grp-h"><b>${esc(title)}</b>
+  return `<div class="grp"><div class="grp-h"><b>${titleHtml}</b>
     <span style="display:flex;gap:6px;align-items:center">${tag}${c}</span></div>
     ${rowsHtml?`<div class="grp-eps">${rowsHtml}</div>`:''}</div>`;
+}
+/* a clickable link to another service — the core "impact link" for navigation */
+function rlink(id){
+  const cls = byId[id] && byId[id].external ? 'rlink' : 'rlink';
+  return `<span class="${cls}" onclick="goRepo('${String(id).replace(/'/g,"\\'")}')">${esc(id)}</span>`;
+}
+function goRepo(id){
+  const n=byId[id]; if(!n) return;
+  if(viewMode==="repo" && !n.external){ focusRepo=id; reposel.value=id; applyFilters(); fit(); }
+  selectNode(n);
 }
 
 function selectNode(n){
@@ -520,7 +599,7 @@ function selectNode(n){
   // Calls — outbound edges, each with the endpoints hit on that target
   const callsHtml = outs.length ? outs.map(e=>{
     const rows = (e.surfaces||[]).map(s=>epRow(s.method,s.path,s.matched, s.evidence)).join('');
-    return group('→ '+e.target,
+    return group(`<span class="arrow">→</span> ${rlink(e.target)}`,
       `${tierChip(e.tier)}<span class="tag ${byId[e.target]&&byId[e.target].external?'ext':''}">${e.types.join(', ')}</span>`,
       e.confidence, rows);
   }).join('') : empty;
@@ -528,8 +607,20 @@ function selectNode(n){
   // Called by — inbound edges, each with the endpoints the caller hits on us
   const calledHtml = ins.length ? ins.map(e=>{
     const rows = (e.surfaces||[]).map(s=>epRow(s.method,s.path,s.matched)).join('');
-    return group('← '+e.source, `<span class="tag">${e.types.join(', ')}</span>`, e.confidence, rows);
+    return group(`<span class="arrow">←</span> ${rlink(e.source)}`,
+      `<span class="tag">${e.types.join(', ')}</span>`, e.confidence, rows);
   }).join('') : empty;
+
+  // Impact — who must be coordinated if this service changes
+  const direct = ins.map(e=>e.source);
+  const transitive = br.filter(r=>!direct.includes(r));
+  const impactHtml = (direct.length||transitive.length) ? `<div class="impact">
+      <div class="lvl">Directly affected — must update together</div>
+      ${direct.length?direct.map(r=>`<div class="ep">⚠ ${rlink(r)}</div>`).join(''):'<div class="empty">none</div>'}
+      ${transitive.length?`<div class="lvl">Transitive blast radius</div>`+
+        transitive.map(r=>`<div class="ep">↳ ${rlink(r)}</div>`).join(''):''}
+      <div class="cmd">deplar impact ${esc(n.id)}</div>
+    </div>` : '<div class="empty">nothing depends on this — safe to change in isolation</div>';
 
   const aliasesHtml = (n.aliases||[]).length
     ? n.aliases.map(a=>`<span class="tag" title="${esc(a.raw)}">${esc(a.alias)} · ${esc(a.source)}</span>`).join(' ')
@@ -546,8 +637,8 @@ function selectNode(n){
     <div>${callsHtml}</div>
     <h3>Called by <span class="n">${ins.length}</span></h3>
     <div>${calledHtml}</div>
-    <h3>Blast radius <span class="n">${br.length}</span></h3>
-    <div>${br.length?br.map(r=>`<div class="ep"><span style="color:var(--warn)">⚠</span> ${esc(r)}</div>`).join(''):empty}</div>
+    <h3>Impact — if you change this <span class="n">${direct.length + transitive.length}</span></h3>
+    ${impactHtml}
     ${n.external?'':`<h3>Code symbols <span class="n">${n.symbols.length}</span>
       <span class="sym-toggle" id="symtog">show</span></h3>
     <div id="symbox" style="display:none">${n.symbols.length?n.symbols.slice(0,40).map(s=>
