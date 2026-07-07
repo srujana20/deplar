@@ -57,3 +57,44 @@ def test_render_html_server_mode_has_no_embedded_data():
     html = render_html(None, served=True)
     assert 'MODE = "server"' in html
     assert "const EMBEDDED = null;" in html
+
+
+def _surface_store(tmp_path):
+    store = SymbolStore(tmp_path / "t.db")
+    store.upsert_repo("order", "/r/order", "2026-01-01T00:00:00Z")
+    store.upsert_repo("user", "/r/user", "2026-01-01T00:00:00Z")
+    from deplar.scanner.route_detector import RouteEdge
+    from pathlib import Path as _P
+    store.replace_routes("user", [
+        RouteEdge(_P("routes.ts"), "GET", "/v1/users/{}", "express", 6),
+        RouteEdge(_P("routes.ts"), "POST", "/users", "express", 10),
+    ])
+    store.replace_dependencies([
+        DependencyEdge("order", "user", ["http"], 1.0, [], [
+            {"channel": "http", "method": "GET", "path": "/v1/users/{}",
+             "key": "GET /v1/users/{}", "matched": True, "evidence": "c.ts:3"}]),
+    ])
+    return store
+
+
+def test_ui_data_carries_surfaces_and_provides(tmp_path):
+    data = build_ui_data(_surface_store(tmp_path))
+    nodes = {n["id"]: n for n in data["nodes"]}
+
+    # edge carries the endpoint the consumer hits
+    edge = next(e for e in data["edges"] if e["target"] == "user")
+    assert edge["surfaces"][0]["key"] == "GET /v1/users/{}"
+    assert edge["surfaces"][0]["matched"] is True
+
+    # user PROVIDES its routes; the called one is flagged consumed, the other unused
+    provides = {p["path"]: p for p in nodes["user"]["provides"]}
+    assert provides["/v1/users/{}"]["consumed"] is True
+    assert provides["/users"]["consumed"] is False
+
+    # order CONSUMES that endpoint, tagged with its target
+    assert nodes["order"]["consumes"][0]["target"] == "user"
+
+
+def test_ui_html_renders_endpoint_widgets(tmp_path):
+    html = render_html(build_ui_data(_surface_store(tmp_path)), served=False)
+    assert "verbBadge" in html and "Provides — API endpoints" in html

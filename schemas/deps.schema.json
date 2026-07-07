@@ -16,6 +16,7 @@
       }
     },
     "dependencies": {
+      "description": "One unified edge schema for every outbound dependency. `types` is the discriminator (http, soap, feign, grpc, kafka, rabbitmq, db, import); `surfaces` carries the channel-specific contract detail — HTTP endpoints today, and datastore descriptors (host/db/table) for `db` edges when that signal lands. db and http share this shape so a consumer treats every dependency uniformly.",
       "type": "array",
       "items": {
         "type": "object",
@@ -27,10 +28,15 @@
             "type": "array",
             "items": {
               "type": "string",
-              "enum": ["import", "http", "feign", "grpc", "kafka", "rabbitmq"]
+              "enum": ["import", "http", "soap", "feign", "grpc", "kafka", "rabbitmq", "db"]
             }
           },
           "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "tier": {
+            "description": "Provenance of the strongest signal. call-site: literal/resolved URL at a recognized network call (highest). config: URL declared in a config/properties file (high). inferred: call site whose host could not be resolved (low). import: a code import (weak).",
+            "type": "string",
+            "enum": ["call-site", "config", "inferred", "import", ""]
+          },
           "evidence": {
             "type": "array",
             "items": {
@@ -39,6 +45,21 @@
                 "file":    { "type": "string" },
                 "line":    { "type": "integer" },
                 "snippet": { "type": "string" }
+              }
+            }
+          },
+          "surfaces": {
+            "description": "Channel-specific contract detail; for http/soap/feign these are the endpoints hit on the provider.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "channel":  { "type": "string" },
+                "method":   { "type": "string" },
+                "path":     { "type": "string" },
+                "key":      { "type": "string" },
+                "matched":  { "type": "boolean" },
+                "evidence": { "type": "string" }
               }
             }
           },

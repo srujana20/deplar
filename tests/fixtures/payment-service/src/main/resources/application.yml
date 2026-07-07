@@ -1,0 +1,20 @@
+server:
+  port: 8081
+
+# Downstream service endpoints declared in config (config-tier dependencies).
+services:
+  orders:
+    url: https://order-service.internal
+  fraud:
+    baseUrl: https://fraud-service.internal/v1
+
+# Not HTTP — must be ignored by the config scanner.
+spring:
+  datasource:
+    url: jdbc:postgresql://db.internal:5432/payments
+  kafka:
+    bootstrap-servers: kafka:9092
+
+# A namespace URI that must never become a dependency.
+xml:
+  schema: http://www.w3.org/2001/XMLSchema

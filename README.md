@@ -65,6 +65,7 @@ deplar detects both what a service **consumes** and what it **provides**, then j
 | Wrapped axios (JS/TS) | `const api = axios.create({baseURL}); api.get('/x')` | 100% |
 | Env var HTTP call | `httpx.get(os.getenv("USER_SVC_URL") + "/v1/x")` | 70% |
 | SOAP call | `webServiceTemplate.marshalSendAndReceive(uri, req)` | 100% |
+| Config endpoint | `payments.service.url` in `application.yml` / `.env` | 85% |
 | Kafka producer | `producer.send("orders.created", ...)` | 100% |
 | Import statement | `from payments_client import Client` | 60% |
 
@@ -79,6 +80,18 @@ deplar detects both what a service **consumes** and what it **provides**, then j
 | FastAPI / Flask (Py) | `@app.get("/v1/users/{id}")`, `@app.route("/x", methods=["POST"])` |
 
 Each dependency gets a confidence score. High confidence means a concrete runtime signal was found. Lower confidence means the tool found a likely signal that needs a human eye.
+
+### Signal quality — what does *not* become a dependency
+
+deplar is deliberately strict about what counts as a real edge:
+
+- **Call-site only.** A URL counts only when it's the argument to a recognized network call — `.get(`/`.post(`, `RestTemplate.exchange`, `new URL(...).openConnection()`, an OkHttp `Request.Builder().url(...)`, a SOAP `marshalSendAndReceive`, or a config property. A string that merely *looks* like a URL elsewhere in a file never enters the graph.
+- **Provenance tiers.** Every edge carries a `tier`: `call-site` (literal/resolved URL at a call — highest), `config` (declared in a properties/YAML file — high), or `inferred` (a call whose host we couldn't resolve — low).
+- **Namespace denylist.** XML/SOAP namespace URIs (`w3.org`, `xmlsoap.org`, `apache.org/xml/features`, `xml.org/sax/features`, `xmlns.example.com`) are dropped outright — they account for most SOAP-repo noise.
+- **gRPC needs evidence.** A `.insecure_channel(...)` only tags as gRPC when the file actually imports the grpc runtime — not on the method name alone.
+- **Infra URLs are skipped.** `jdbc:`, `redis:`, `amqp:`, Kafka bootstrap lists etc. in config are not HTTP dependencies (they belong to the future db/queue signals).
+
+All outbound dependency types — http, soap, feign, grpc, kafka, and a future `db` — share **one edge schema** (`from`/`to`/`types`/`confidence`/`tier`/`surfaces`), so a consumer treats every dependency uniformly; the `types` discriminator and `surfaces` payload carry the channel-specific detail. See [`schemas/deps.schema.json`](schemas/deps.schema.json).
 
 ---
 

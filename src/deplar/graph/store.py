@@ -20,6 +20,7 @@ class DependencyGraph:
             confidence=edge.confidence,
             evidence=edge.evidence,
             surfaces=getattr(edge, "surfaces", []),
+            tier=getattr(edge, "tier", ""),
         )
 
     def get_dependencies(self, repo: str) -> List[str]:
@@ -73,6 +74,7 @@ class DependencyGraph:
                 "to":         v,
                 "types":      data.get("dep_types", []),
                 "confidence": data.get("confidence", 0.0),
+                "tier":       data.get("tier", ""),
                 "evidence":   evidence,
                 "surfaces":   surfaces,
                 "metadata":   {},
@@ -113,4 +115,6 @@ class DependencyGraph:
                 dep_types=dep["types"],
                 confidence=dep["confidence"],
                 evidence=dep["evidence"],
+                surfaces=dep.get("surfaces", []),
+                tier=dep.get("tier", ""),
             )

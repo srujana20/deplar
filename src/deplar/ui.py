@@ -36,6 +36,7 @@ def build_ui_data(store: SymbolStore) -> dict:
             nodes[name] = {
                 "id": name, "external": external, "languages": [],
                 "in": 0, "out": 0, "aliases": [], "symbols": [], "path": "",
+                "provides": [], "consumes": [], "consumed_keys": [],
             }
         return nodes[name]
 
@@ -55,6 +56,23 @@ def build_ui_data(store: SymbolStore) -> dict:
             for s in syms
         ]
         n["languages"] = sorted({s["language"] for s in syms if s.get("language")})
+        # HTTP routes this repo serves (what it provides)
+        n["provides"] = [
+            {"method": rt["method"] or "ANY", "path": rt["path"] or "/",
+             "framework": rt.get("framework", ""),
+             "file": rt.get("file", ""), "line": rt.get("line", 0)}
+            for rt in store.routes_for_repo(r["name"])
+        ]
+
+    def _surfaces(e) -> list:
+        out = []
+        for s in getattr(e, "surfaces", []) or []:
+            out.append({
+                "method": s.get("method", "ANY"), "path": s.get("path", ""),
+                "key": s.get("key", ""), "matched": bool(s.get("matched")),
+                "evidence": s.get("evidence", ""),
+            })
+        return out
 
     edge_list = []
     for e in edges:
@@ -62,10 +80,30 @@ def build_ui_data(store: SymbolStore) -> dict:
         ensure(e.to_repo, external=e.to_repo not in repo_names)
         nodes[e.from_repo]["out"] += 1
         nodes[e.to_repo]["in"] += 1
+        surfaces = _surfaces(e)
         edge_list.append({
             "source": e.from_repo, "target": e.to_repo,
             "types": e.dep_types, "confidence": round(e.confidence, 2),
+            "tier": getattr(e, "tier", ""),
+            "surfaces": surfaces,
+            # import-only edges (framework/lib imports) are noise for a call map
+            "import_only": all(t == "import" for t in e.dep_types),
         })
+        # outbound endpoints this repo calls on the target
+        for s in surfaces:
+            nodes[e.from_repo]["consumes"].append({**s, "target": e.to_repo})
+        # remember which of the target's endpoints are actually consumed
+        for s in surfaces:
+            if s["matched"] and s["key"]:
+                nodes[e.to_repo]["consumed_keys"].append(s["key"])
+
+    # flag each provided route that some consumer actually calls
+    from deplar.scanner.endpoints import endpoint_key
+    for n in nodes.values():
+        consumed = set(n.get("consumed_keys", []))
+        for p in n["provides"]:
+            p["consumed"] = endpoint_key(p["method"], p["path"]) in consumed
+        n.pop("consumed_keys", None)
 
     return {"nodes": list(nodes.values()), "edges": edge_list}
 
@@ -146,55 +184,91 @@ _TEMPLATE = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TITLE__</title>
 <style>
-  :root { color-scheme: light dark; --bg:#0f1115; --panel:#171a21; --line:#2a2f3a;
-          --txt:#e6e8ec; --muted:#9aa3b2; --accent:#6ea8fe; --ext:#8a5cf6;
-          --ok:#3ecf8e; --warn:#e0a03a; }
+  :root { color-scheme: light dark; --bg:#0d0f14; --bg2:#12151c; --panel:#161a22;
+          --panel2:#1c212b; --line:#272d39; --txt:#e8eaf0; --muted:#8b94a6;
+          --accent:#6ea8fe; --ext:#a97cf8;
+          --ok:#3ecf8e; --warn:#e0a03a; --bad:#f0736a;
+          --get:#3ecf8e; --post:#6ea8fe; --put:#e0a03a; --del:#f0736a; --any:#8b94a6; }
   @media (prefers-color-scheme: light) {
-    :root { --bg:#f7f8fa; --panel:#fff; --line:#e3e6ea; --txt:#1c2129;
-            --muted:#5c6470; --accent:#2f6fed; }
+    :root { --bg:#f4f6f9; --bg2:#eef1f5; --panel:#fff; --panel2:#f7f9fc;
+            --line:#e3e6ea; --txt:#1c2129; --muted:#69707c; --accent:#2f6fed; }
   }
   * { box-sizing: border-box; }
-  html,body { margin:0; height:100%; font-family: ui-sans-serif, system-ui, sans-serif;
-              background:var(--bg); color:var(--txt); }
+  html,body { margin:0; height:100%; font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+              background:var(--bg); color:var(--txt); font-size:14px; }
   #app { display:flex; height:100%; }
-  #graph { flex:1; position:relative; }
+  #graph { flex:1; position:relative;
+           background:radial-gradient(circle at 30% 20%, var(--bg2), var(--bg) 70%); }
   svg { width:100%; height:100%; display:block; cursor:grab; }
   svg.panning { cursor:grabbing; }
-  .edge { stroke:var(--line); stroke-width:1.2; }
-  .edge.low { stroke-dasharray:4 3; opacity:.6; }
+  .edge { stroke:var(--line); stroke-width:1.2; transition:stroke .15s; }
+  .edge.low { stroke-dasharray:4 3; opacity:.55; }
   .edge.hi { stroke-width:2; }
-  .node circle { stroke:var(--bg); stroke-width:2; cursor:pointer; }
+  .edge.hot { stroke:var(--accent); stroke-width:2.4; opacity:1; }
+  .node circle { stroke:var(--bg); stroke-width:2.5; cursor:pointer; transition:filter .15s; }
   .node.repo circle { fill:var(--accent); }
   .node.ext circle { fill:var(--ext); }
-  .node.dim { opacity:.15; }
-  .node text { fill:var(--txt); font-size:11px; pointer-events:none;
+  .node.dim { opacity:.12; }
+  .node.sel circle { stroke:#fff; stroke-width:3; filter:drop-shadow(0 0 6px var(--accent)); }
+  .node text { fill:var(--txt); font-size:11px; font-weight:500; pointer-events:none;
                paint-order:stroke; stroke:var(--bg); stroke-width:3px; }
-  #bar { position:absolute; top:12px; left:12px; right:12px; display:flex; gap:10px;
+  #bar { position:absolute; top:14px; left:14px; right:14px; display:flex; gap:9px;
          align-items:center; flex-wrap:wrap; z-index:5; }
-  #bar input[type=search]{ padding:7px 10px; border-radius:8px; border:1px solid var(--line);
-         background:var(--panel); color:var(--txt); min-width:200px; }
-  .pill { background:var(--panel); border:1px solid var(--line); border-radius:8px;
-          padding:6px 10px; font-size:12px; color:var(--muted); display:flex;
-          gap:8px; align-items:center; }
-  button { background:var(--accent); color:#fff; border:0; border-radius:8px;
-           padding:7px 12px; font-size:12px; cursor:pointer; }
+  #bar input[type=search]{ padding:8px 12px; border-radius:9px; border:1px solid var(--line);
+         background:var(--panel); color:var(--txt); min-width:210px; outline:none; }
+  #bar input[type=search]:focus{ border-color:var(--accent); }
+  .pill { background:var(--panel); border:1px solid var(--line); border-radius:9px;
+          padding:7px 11px; font-size:12px; color:var(--muted); display:flex;
+          gap:8px; align-items:center; box-shadow:0 1px 3px rgba(0,0,0,.15); }
+  button { background:var(--accent); color:#fff; border:0; border-radius:9px;
+           padding:8px 13px; font-size:12px; font-weight:600; cursor:pointer; }
+  button:hover { filter:brightness(1.08); }
   button.ghost { background:var(--panel); color:var(--txt); border:1px solid var(--line); }
-  #side { width:340px; background:var(--panel); border-left:1px solid var(--line);
-          padding:18px; overflow:auto; }
-  #side h2 { font-size:16px; margin:0 0 2px; }
-  #side .sub { color:var(--muted); font-size:12px; margin-bottom:14px; }
-  #side h3 { font-size:12px; text-transform:uppercase; letter-spacing:.04em;
-             color:var(--muted); margin:16px 0 6px; }
+  #side { width:392px; background:var(--panel); border-left:1px solid var(--line);
+          padding:20px 20px 40px; overflow:auto; }
+  #side h2 { font-size:18px; margin:0 0 3px; display:flex; align-items:center; gap:8px; }
+  #side .sub { color:var(--muted); font-size:12.5px; margin-bottom:8px; }
+  #side h3 { font-size:11px; text-transform:uppercase; letter-spacing:.05em;
+             color:var(--muted); margin:20px 0 8px; display:flex; gap:7px; align-items:center; }
+  #side h3 .n { background:var(--panel2); border:1px solid var(--line); border-radius:20px;
+                padding:0 7px; font-size:10px; }
   #side ul { list-style:none; margin:0; padding:0; }
-  #side li { font-size:13px; padding:3px 0; border-bottom:1px solid var(--line); }
-  #side .empty { color:var(--muted); font-size:13px; }
-  code { font-family: ui-monospace, monospace; font-size:12px; }
-  .tag { font-size:11px; padding:1px 6px; border-radius:6px; border:1px solid var(--line);
+  #side .empty { color:var(--muted); font-size:13px; padding:2px 0; }
+  code { font-family: ui-monospace, "SF Mono", monospace; font-size:12px; }
+  /* group card: a caller/callee repo with its endpoints */
+  .grp { background:var(--panel2); border:1px solid var(--line); border-radius:11px;
+         padding:9px 11px; margin-bottom:8px; }
+  .grp-h { display:flex; align-items:center; gap:7px; justify-content:space-between;
+           cursor:pointer; }
+  .grp-h b { font-size:13px; }
+  .grp-eps { margin-top:7px; display:flex; flex-direction:column; gap:5px; }
+  .ep { display:flex; align-items:center; gap:8px; font-size:12px; }
+  .ep code { color:var(--txt); }
+  .verb { font-size:10px; font-weight:700; letter-spacing:.03em; padding:2px 6px;
+          border-radius:5px; color:#0d0f14; min-width:44px; text-align:center; }
+  .verb.get{background:var(--get)} .verb.post{background:var(--post)}
+  .verb.put,.verb.patch{background:var(--put)} .verb.delete{background:var(--del)}
+  .verb.any,.verb.soap{background:var(--any)}
+  .dot { width:7px; height:7px; border-radius:50%; flex:none; }
+  .dot.ok{background:var(--ok)} .dot.gap{background:var(--warn)}
+  .mini { font-size:10.5px; color:var(--muted); }
+  .tag { font-size:10.5px; padding:1px 7px; border-radius:6px; border:1px solid var(--line);
          color:var(--muted); }
+  .tag.ext { color:var(--ext); border-color:var(--ext); }
+  .badge { font-size:10px; padding:1px 7px; border-radius:20px; font-weight:600; }
+  .badge.used { background:rgba(62,207,142,.16); color:var(--ok); }
+  .badge.unused { background:rgba(224,160,58,.16); color:var(--warn); }
   .conf-hi { color:var(--ok); } .conf-lo { color:var(--warn); }
-  .cmd { background:var(--bg); border:1px solid var(--line); border-radius:8px;
-         padding:8px; font-family:ui-monospace,monospace; font-size:11px;
-         word-break:break-all; margin-top:6px; }
+  .arrow { color:var(--muted); }
+  .cmd { background:var(--bg); border:1px solid var(--line); border-radius:9px;
+         padding:9px 10px; font-family:ui-monospace,monospace; font-size:11px;
+         word-break:break-all; margin-top:6px; color:var(--muted); }
+  .legend { position:absolute; bottom:14px; left:14px; display:flex; gap:12px;
+            font-size:11px; color:var(--muted); background:var(--panel); padding:7px 12px;
+            border:1px solid var(--line); border-radius:9px; z-index:5; }
+  .legend span { display:flex; align-items:center; gap:5px; }
+  .swatch { width:9px; height:9px; border-radius:50%; }
+  .sym-toggle { cursor:pointer; color:var(--accent); font-size:12px; user-select:none; }
 </style>
 </head>
 <body>
@@ -206,15 +280,23 @@ _TEMPLATE = r"""<!doctype html>
         <input id="conf" type="range" min="0" max="100" value="0"> <span id="confv">0%</span>
       </label>
       <label class="pill"><input id="hideext" type="checkbox"> hide external</label>
+      <label class="pill"><input id="showimports" type="checkbox"> show imports</label>
       <button class="ghost" id="fit">Fit</button>
       <button id="reconcile" style="display:none">Reconcile</button>
       <span class="pill" id="stat"></span>
     </div>
     <svg id="svg"></svg>
+    <div class="legend">
+      <span><i class="swatch" style="background:var(--accent)"></i>service</span>
+      <span><i class="swatch" style="background:var(--ext)"></i>external</span>
+      <span><i class="dot ok"></i>endpoint matched</span>
+      <span><i class="dot gap"></i>unmatched / unused</span>
+    </div>
   </div>
   <div id="side">
-    <div class="empty" id="hint">Click a node to inspect its dependencies,
-      blast radius and API surface.</div>
+    <div class="empty" id="hint">Click a service to inspect the API it
+      <b>provides</b>, the endpoints it <b>calls</b> on others, who <b>calls it</b>,
+      and its blast radius.</div>
     <div id="detail" style="display:none"></div>
   </div>
 </div>
@@ -350,23 +432,33 @@ svg.addEventListener("click",()=>clearSelect());
 
 /* --- filters --- */
 const confEl=document.getElementById("conf"), hideExtEl=document.getElementById("hideext"),
-      searchEl=document.getElementById("search");
+      showImpEl=document.getElementById("showimports"), searchEl=document.getElementById("search");
 function applyFilters(){
   const minc=+confEl.value/100, hideExt=hideExtEl.checked,
-        q=searchEl.value.trim().toLowerCase();
+        showImp=showImpEl.checked, q=searchEl.value.trim().toLowerCase();
+  const degree={}; NODES.forEach(n=>degree[n.id]=0);
   edgeEls.forEach(ln=>{ const e=ln.__e;
     let show=e.confidence>=minc;
+    if(!showImp && e.import_only) show=false;
     if(hideExt && (byId[e.target].external||byId[e.source].external)) show=false;
-    ln.style.display=show?"":"none"; });
+    ln.style.display=show?"":"none";
+    if(show){ degree[e.source]++; degree[e.target]++; }
+  });
   NODES.forEach(n=>{
     const g=nodeEls[n.id]; let show=true;
     if(hideExt && n.external) show=false;
+    // drop external leaf nodes that lost all their edges (import noise)
+    if(n.external && degree[n.id]===0) show=false;
     g.style.display=show?"":"none";
     g.classList.toggle("dim", q && !n.id.toLowerCase().includes(q));
   });
+  const shown=NODES.filter(n=>nodeEls[n.id].style.display!=="none").length,
+        edg=edgeEls.filter(l=>l.style.display!=="none").length;
+  document.getElementById("stat").textContent = shown+" services · "+edg+" deps";
 }
 confEl.addEventListener("input",()=>{ document.getElementById("confv").textContent=confEl.value+"%"; applyFilters(); });
 hideExtEl.addEventListener("change",applyFilters);
+showImpEl.addEventListener("change",()=>{ applyFilters(); if(selected) selectNode(selected); });
 searchEl.addEventListener("input",applyFilters);
 document.getElementById("fit").addEventListener("click",fit);
 document.getElementById("reconcile").addEventListener("click",async()=>{
@@ -383,37 +475,97 @@ function blast(id){ const seen=new Set(); let front=[id];
   return [...seen]; }
 function clearSelect(){ selected=null;
   document.getElementById("detail").style.display="none";
-  document.getElementById("hint").style.display=""; }
+  document.getElementById("hint").style.display="";
+  NODES.forEach(x=>{ const g=nodeEls[x.id]; if(g){ g.classList.remove("dim","sel"); }});
+  edgeEls.forEach(ln=>ln.classList.remove("hot"));
+  applyFilters(); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function verbBadge(m){ const v=(m||'ANY').toLowerCase();
+  const cls=['get','post','put','patch','delete','soap','any'].includes(v)?v:'any';
+  return `<span class="verb ${cls}">${esc((m||'ANY').toUpperCase())}</span>`; }
+function epRow(method, path, matched, note){
+  const dot = matched===null ? '' : `<i class="dot ${matched?'ok':'gap'}" title="${matched?'matched to a provider route':'no matching provider route'}"></i>`;
+  return `<div class="ep">${verbBadge(method)}<code>${esc(path||'/')}</code>${dot}${note?`<span class="mini">${esc(note)}</span>`:''}</div>`;
+}
+/* group: a peer repo + the endpoints exchanged with it */
+function group(title, tag, conf, rowsHtml){
+  const c = conf==null?'':`<span class="${conf>=0.8?'conf-hi':'conf-lo'}">${Math.round(conf*100)}%</span>`;
+  return `<div class="grp"><div class="grp-h"><b>${esc(title)}</b>
+    <span style="display:flex;gap:6px;align-items:center">${tag}${c}</span></div>
+    ${rowsHtml?`<div class="grp-eps">${rowsHtml}</div>`:''}</div>`;
+}
+
 function selectNode(n){
   selected=n;
   document.getElementById("hint").style.display="none";
   const d=document.getElementById("detail"); d.style.display="";
-  const outs=EDGES.filter(e=>e.source===n.id),
-        ins=EDGES.filter(e=>e.target===n.id),
+  const showImp=showImpEl.checked;
+  const outs=EDGES.filter(e=>e.source===n.id && (showImp||!e.import_only)),
+        ins=EDGES.filter(e=>e.target===n.id && (showImp||!e.import_only)),
         br=blast(n.id);
-  const conf=c=>`<span class="${c>=0.8?'conf-hi':'conf-lo'}">${Math.round(c*100)}%</span>`;
-  const li=(txt)=>`<li>${txt}</li>`;
-  const list=(arr,fn)=>arr.length?arr.map(fn).join(""):'<li class="empty">none</li>';
+  const empty='<div class="empty">none</div>';
+
+  // Provides — the API this service serves
+  const provides = (n.provides||[]);
+  const provHtml = provides.length ? provides.map(p=>
+      `<div class="ep">${verbBadge(p.method)}<code>${esc(p.path)}</code>
+        <span class="badge ${p.consumed?'used':'unused'}">${p.consumed?'consumed':'unused'}</span>
+        <span class="mini">${esc(p.framework||'')}${p.file?' · '+esc(p.file)+':'+p.line:''}</span></div>`
+    ).join('') : empty;
+
+  const tierChip=t=> t==='config'
+      ? '<span class="tag" style="border-color:var(--accent);color:var(--accent)">config</span>'
+      : t==='inferred' ? '<span class="tag" style="color:var(--warn)">inferred</span>' : '';
+
+  // Calls — outbound edges, each with the endpoints hit on that target
+  const callsHtml = outs.length ? outs.map(e=>{
+    const rows = (e.surfaces||[]).map(s=>epRow(s.method,s.path,s.matched, s.evidence)).join('');
+    return group('→ '+e.target,
+      `${tierChip(e.tier)}<span class="tag ${byId[e.target]&&byId[e.target].external?'ext':''}">${e.types.join(', ')}</span>`,
+      e.confidence, rows);
+  }).join('') : empty;
+
+  // Called by — inbound edges, each with the endpoints the caller hits on us
+  const calledHtml = ins.length ? ins.map(e=>{
+    const rows = (e.surfaces||[]).map(s=>epRow(s.method,s.path,s.matched)).join('');
+    return group('← '+e.source, `<span class="tag">${e.types.join(', ')}</span>`, e.confidence, rows);
+  }).join('') : empty;
+
+  const aliasesHtml = (n.aliases||[]).length
+    ? n.aliases.map(a=>`<span class="tag" title="${esc(a.raw)}">${esc(a.alias)} · ${esc(a.source)}</span>`).join(' ')
+    : '<span class="empty">none</span>';
+
   d.innerHTML = `
-    <h2>${n.id} ${n.external?'<span class="tag">external</span>':''}</h2>
+    <h2>${esc(n.id)} ${n.external?'<span class="tag ext">external</span>':''}</h2>
     <div class="sub">${n.external?'unresolved / external dependency':
-        (n.languages.join(', ')||'—')}</div>
-    ${n.external?'':`<h3>Aliases</h3><ul>${list(n.aliases,a=>li(
-        `<code>${a.alias}</code> <span class="tag">${a.source}</span>`))}</ul>`}
-    <h3>Calls (${outs.length})</h3>
-    <ul>${list(outs,e=>li(`→ ${e.target} <span class="tag">${e.types.join(', ')}</span> ${conf(e.confidence)}`))}</ul>
-    <h3>Called by (${ins.length})</h3>
-    <ul>${list(ins,e=>li(`← ${e.source} <span class="tag">${e.types.join(', ')}</span> ${conf(e.confidence)}`))}</ul>
-    <h3>Blast radius (${br.length})</h3>
-    <ul>${list(br,r=>li('⚠ '+r))}</ul>
-    ${n.external?'':`<h3>API surface (${n.symbols.length})</h3>
-    <ul>${list(n.symbols.slice(0,30),s=>li(
-        `<code>${s.signature||s.name}</code><br><span class="tag">${s.kind}</span> ${s.file}:${s.line}`))}</ul>
+        (n.languages.join(', ')||'—')} · <b>${outs.length}</b> out · <b>${ins.length}</b> in</div>
+    ${n.external?'':`<div style="margin-top:6px">${aliasesHtml}</div>
+    <h3>Provides — API endpoints <span class="n">${provides.length}</span></h3>
+    <div>${provHtml}</div>`}
+    <h3>Calls <span class="n">${outs.length}</span></h3>
+    <div>${callsHtml}</div>
+    <h3>Called by <span class="n">${ins.length}</span></h3>
+    <div>${calledHtml}</div>
+    <h3>Blast radius <span class="n">${br.length}</span></h3>
+    <div>${br.length?br.map(r=>`<div class="ep"><span style="color:var(--warn)">⚠</span> ${esc(r)}</div>`).join(''):empty}</div>
+    ${n.external?'':`<h3>Code symbols <span class="n">${n.symbols.length}</span>
+      <span class="sym-toggle" id="symtog">show</span></h3>
+    <div id="symbox" style="display:none">${n.symbols.length?n.symbols.slice(0,40).map(s=>
+        `<div class="ep"><code>${esc(s.signature||s.name)}</code></div>
+         <div class="mini" style="margin:-2px 0 4px 4px">${esc(s.kind)} · ${esc(s.file)}:${s.line}</div>`).join(''):empty}</div>
     <h3>Coordinated workspace</h3>
-    <div class="cmd">deplar workspace ${n.id} --out ./workspace</div>`}
+    <div class="cmd">deplar workspace ${esc(n.id)} --out ./workspace</div>`}
   `;
-  NODES.forEach(x=>nodeEls[x.id].classList.toggle("dim",
-    x.id!==n.id && !outs.some(e=>e.target===x.id) && !ins.some(e=>e.source===x.id)));
+  const tog=document.getElementById("symtog");
+  if(tog) tog.onclick=()=>{ const b=document.getElementById("symbox");
+    const on=b.style.display==="none"; b.style.display=on?"":"none"; tog.textContent=on?"hide":"show"; };
+
+  const near=new Set([n.id, ...outs.map(e=>e.target), ...ins.map(e=>e.source)]);
+  NODES.forEach(x=>{ const g=nodeEls[x.id];
+    g.classList.toggle("dim", !near.has(x.id));
+    g.classList.toggle("sel", x.id===n.id); });
+  edgeEls.forEach(ln=>{ const e=ln.__e;
+    ln.classList.toggle("hot", e.source===n.id||e.target===n.id); });
 }
 boot();
 </script>

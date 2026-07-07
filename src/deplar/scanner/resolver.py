@@ -4,7 +4,14 @@ from typing import List
 
 from deplar.scanner.ast_parser import FeignClientEdge, ImportEdge
 from deplar.scanner.endpoints import endpoint_key
-from deplar.scanner.network_detector import NetworkCallEdge
+from deplar.scanner.network_detector import NetworkCallEdge, is_namespace_noise
+
+# provenance tier ranking — the edge takes the strongest of its signals.
+_TIER_RANK = {"call-site": 4, "config": 3, "inferred": 2, "import": 1, "": 0}
+
+
+def _stronger_tier(a: str, b: str) -> str:
+    return a if _TIER_RANK.get(a, 0) >= _TIER_RANK.get(b, 0) else b
 
 
 @dataclass
@@ -17,6 +24,8 @@ class DependencyEdge:
     # HTTP surfaces the consumer hits on the provider; each is
     # {"channel","method","path","key","matched","evidence"}.
     surfaces: List[dict] = field(default_factory=list)
+    # strongest provenance tier across this edge's signals (see network_detector)
+    tier: str = ""
 
 
 def _normalize(name: str) -> str:
@@ -56,7 +65,7 @@ class DependencyResolver:
         buckets: dict[str, DependencyEdge] = {}
 
         def add(to: str, dep_type: str, confidence: float, evidence: str,
-                surface: dict | None = None):
+                surface: dict | None = None, tier: str = ""):
             to = _normalize(to) if dep_type == "import" else to
             key = f"{repo_name}::{to}"
             if key not in buckets:
@@ -72,6 +81,7 @@ class DependencyResolver:
                 e.dep_types.append(dep_type)
             e.confidence = max(e.confidence, confidence)
             e.evidence.append(evidence)
+            e.tier = _stronger_tier(e.tier, tier)
             if surface and surface not in e.surfaces:
                 e.surfaces.append(surface)
 
@@ -82,23 +92,28 @@ class DependencyResolver:
 
         for e in import_edges:
             add(e.imported_module, "import", 0.6,
-                f"{e.source_file.name}:{e.line_number}")
+                f"{e.source_file.name}:{e.line_number}", tier="import")
 
         for e in feign_edges:
             target = e.client_name or _extract_service_from_url(e.url_pattern)
             ev = f"{e.source_file.name}:{e.line_number}"
             if e.surfaces:
                 for verb, spath in e.surfaces:
-                    add(target, "feign", 0.95, ev, surface(verb, spath, ev))
+                    add(target, "feign", 0.95, ev, surface(verb, spath, ev),
+                        tier="call-site")
             else:
-                add(target, "feign", 0.95, ev)
+                add(target, "feign", 0.95, ev, tier="call-site")
 
         for e in network_edges:
+            # safety net: a namespace/schema URI is never a real target
+            if is_namespace_noise(e.target):
+                continue
             target = _extract_service_from_url(e.target)
             ev = f"{e.source_file.name}:{e.line_number}"
             sfc = (surface(e.method, e.path, ev)
                    if e.call_type == "http" and e.path else None)
-            add(target, e.call_type, e.confidence, ev, sfc)
+            add(target, e.call_type, e.confidence, ev, sfc,
+                tier=getattr(e, "tier", "call-site"))
 
         # filter out noise — stdlib, generic names
         noise = {"os", "sys", "re", "json", "path", "typing",

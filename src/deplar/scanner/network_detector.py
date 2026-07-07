@@ -27,6 +27,11 @@ class NetworkCallEdge:
     raw: str = ""
     method: str = ""   # HTTP verb (GET/POST/...) — surface matching, if known
     path: str = ""     # request path split from the resolved target URL
+    # provenance tier — see _score_target / config_scanner:
+    #   "call-site" a literal/resolved URL at a recognized network call (highest)
+    #   "config"    a URL from a config/properties file (high)
+    #   "inferred"  a call site whose host we couldn't resolve (low)
+    tier: str = "call-site"
 
 
 def _node_text(node: Node, source: bytes) -> str:
@@ -49,35 +54,58 @@ TS_HTTP_FUNCS = {"fetch", "axios", "got", "ky"}
 
 GRPC_PATTERNS = ["insecure_channel", "secure_channel"]
 
+# Namespace / schema URIs that appear as string literals in XML, SOAP, JAXB and
+# SAX code but are NEVER real network targets. Dropped outright, at any tier.
+_NAMESPACE_HOSTS = {
+    "www.w3.org", "w3.org", "schemas.xmlsoap.org", "xmlsoap.org",
+    "xmlns.example.com", "www.xml.org", "xml.org",
+}
+_NAMESPACE_PATH_MARKERS = (
+    "apache.org/xml/features", "xml.org/sax/features", "xml.org/sax/properties",
+    "w3.org/", "xmlsoap.org/",
+)
+
+
+def is_namespace_noise(url: str) -> bool:
+    """True if `url` is an XML/SOAP namespace URI, not a real endpoint."""
+    if not url:
+        return False
+    u = re.sub(r"^\$ENV:", "", url).lower()
+    m = re.match(r"^[a-z]+://([^/]+)", u)
+    host = m.group(1).split(":")[0] if m else ""
+    if host in _NAMESPACE_HOSTS:
+        return True
+    return any(marker in u for marker in _NAMESPACE_PATH_MARKERS)
+
 # client method name -> canonical HTTP verb (unmapped names => "" => ANY)
 _HTTP_VERB = {v: v.upper() for v in
               ("get", "post", "put", "patch", "delete", "head", "options")}
 
 
-def _score_target(target: str) -> tuple[str, float]:
-    """
-    Given a (possibly variable-resolved) target string from source code,
-    return (normalized_target, confidence_score).
+def _score_target(target: str) -> tuple[str, float, str]:
+    """Classify a (possibly variable-resolved) call-site target.
+
+    Returns (normalized_target, confidence, tier). Because this is only ever
+    called on the *argument of a recognized network call*, every result is a
+    genuine dependency signal — a string literal that merely looks like a URL
+    elsewhere in the file never reaches here.
     """
     if target.startswith("http://") or target.startswith("https://"):
-        return target, 1.0
+        return target, 1.0, "call-site"
 
     # already resolved to an env-var reference (via a tracked variable)
     if target.startswith("$ENV:"):
-        return target, 0.7
+        return target, 0.7, "call-site"
 
     if "os.getenv" in target or "os.environ" in target or "process.env" in target:
         match = re.search(r'getenv\(["\']([^"\']+)["\']', target)
         if not match:
             match = re.search(r'process\.env\.(\w+)', target)
         name = match.group(1) if match else target
-        return f"$ENV:{name}", 0.7
+        return f"$ENV:{name}", 0.7, "call-site"
 
-    # unresolved f-string / template / concatenation with a variable
-    if "{" in target or "+" in target or "$" in target:
-        return target, 0.4
-
-    return target, 0.4
+    # a call site whose host we couldn't resolve (variable/template/concat)
+    return target, 0.4, "inferred"
 
 
 # --- Python ---
@@ -150,6 +178,9 @@ def detect_python_network_calls(path: Path) -> List[NetworkCallEdge]:
     tree = parser.parse(source)
     edges: List[NetworkCallEdge] = []
     var_map = _collect_py_vars(tree.root_node, source)
+    # gRPC is only credible when the grpc runtime is actually imported —
+    # otherwise `insecure_channel` is just a method name that happens to match.
+    grpc_imported = bool(re.search(rb'^\s*(import grpc\b|from grpc\b)', source, re.M))
 
     def first_arg(args_node: Node) -> Node | None:
         return args_node.named_children[0] if args_node.named_children else None
@@ -172,14 +203,16 @@ def detect_python_network_calls(path: Path) -> List[NetworkCallEdge]:
                 if http_method:
                     arg = first_arg(args_node)
                     target = _resolve_py_target(arg, source, var_map) if arg else ""
-                    scored, confidence = _score_target(target)
-                    _, req_path = split_host_path(scored)
-                    edges.append(NetworkCallEdge(
-                        source_file=path, call_type="http", target=scored,
-                        confidence=confidence, line_number=node.start_point[0] + 1,
-                        raw=node_text[:120],
-                        method=_HTTP_VERB.get(http_method, ""), path=req_path,
-                    ))
+                    scored, confidence, tier = _score_target(target)
+                    if not is_namespace_noise(scored):
+                        _, req_path = split_host_path(scored)
+                        edges.append(NetworkCallEdge(
+                            source_file=path, call_type="http", target=scored,
+                            confidence=confidence, line_number=node.start_point[0] + 1,
+                            raw=node_text[:120],
+                            method=_HTTP_VERB.get(http_method, ""), path=req_path,
+                            tier=tier,
+                        ))
 
                 # Kafka: producer.send("topic", ...)
                 if func_text.endswith(".send") and "producer" in node_text.lower():
@@ -192,8 +225,11 @@ def detect_python_network_calls(path: Path) -> List[NetworkCallEdge]:
                             raw=node_text[:120],
                         ))
 
-                # gRPC: grpc.insecure_channel(...)
-                if any(p in func_text for p in GRPC_PATTERNS):
+                # gRPC: grpc.insecure_channel(...) — only if grpc is imported
+                if grpc_imported and any(
+                    func_text.endswith("." + p) or func_text == "grpc." + p
+                    for p in GRPC_PATTERNS
+                ):
                     arg = first_arg(args_node)
                     literal = (_py_string_literal(arg, source) if arg else None) or "unknown"
                     edges.append(NetworkCallEdge(
@@ -352,14 +388,15 @@ def detect_ts_network_calls(path: Path, tsx: bool = False) -> List[NetworkCallEd
                     # prepend the instance baseURL when the call used a bare path
                     if base and (target.startswith("/") or not target):
                         target = base.rstrip("/") + target
-                    scored, confidence = _score_target(target)
-                    _, req_path = split_host_path(scored)
-                    edges.append(NetworkCallEdge(
-                        source_file=path, call_type="http", target=scored,
-                        confidence=confidence, line_number=node.start_point[0] + 1,
-                        raw=_node_text(node, source)[:120],
-                        method=http_method, path=req_path,
-                    ))
+                    scored, confidence, tier = _score_target(target)
+                    if not is_namespace_noise(scored):
+                        _, req_path = split_host_path(scored)
+                        edges.append(NetworkCallEdge(
+                            source_file=path, call_type="http", target=scored,
+                            confidence=confidence, line_number=node.start_point[0] + 1,
+                            raw=_node_text(node, source)[:120],
+                            method=http_method, path=req_path, tier=tier,
+                        ))
 
         for child in node.children:
             walk(child)
@@ -460,14 +497,16 @@ def detect_java_network_calls(path: Path) -> List[NetworkCallEdge]:
                  explicit_path: str | None = None):
         target = (_resolve_java_target(target_node, source, var_map)
                   if target_node is not None else "")
-        scored, confidence = _score_target(target)
+        scored, confidence, tier = _score_target(target)
+        if is_namespace_noise(scored):
+            return
         _, req_path = split_host_path(scored)
         if explicit_path is not None:
             req_path = explicit_path
         edges.append(NetworkCallEdge(
             source_file=path, call_type="http", target=scored,
             confidence=confidence, line_number=line, raw=raw[:120],
-            method=method, path=req_path,
+            method=method, path=req_path, tier=tier,
         ))
 
     def walk(node: Node):
@@ -496,9 +535,24 @@ def detect_java_network_calls(path: Path) -> List[NetworkCallEdge]:
                 if receiver_ok:
                     add_http(JAVA_REST_VERBS[name], args[0], line, raw)
 
-            # OkHttp: new Request.Builder().url("...")
-            elif name == "url" and args:
+            # OkHttp: new Request.Builder().url("...") — require a builder chain,
+            # so a bare `.url("http://www.w3.org/...")` in XML code is ignored.
+            elif name == "url" and args and re.search(r'builder|request', obj_text, re.I):
                 add_http("ANY", args[0], line, raw)
+
+            # HttpURLConnection: new URL("...").openConnection()
+            elif name == "openConnection" and obj_node is not None:
+                url_arg = None
+                if obj_node.type == "object_creation_expression":
+                    oargs = args_of(obj_node)
+                    tnode = obj_node.child_by_field_name("type")
+                    ttext = _node_text(tnode, source) if tnode else ""
+                    if oargs and re.search(r'\bURL$', ttext):  # URL / java.net.URL
+                        url_arg = oargs[0]
+                elif obj_node.type == "identifier":
+                    url_arg = obj_node  # a URL variable
+                if url_arg is not None:
+                    add_http("ANY", url_arg, line, raw)
 
             # SOAP: webServiceTemplate.marshalSendAndReceive(uri, request)
             elif name in _SOAP_METHODS and args:
@@ -506,13 +560,13 @@ def detect_java_network_calls(path: Path) -> List[NetworkCallEdge]:
                 # only when the first arg is a URI string/var, not a payload
                 target = _resolve_java_target(first, source, var_map)
                 if _java_string_literal(first, source) or first.type == "identifier":
-                    scored, confidence = _score_target(target)
+                    scored, confidence, tier = _score_target(target)
                     host, req_path = split_host_path(scored)
-                    if host or scored.startswith("$ENV:"):
+                    if (host or scored.startswith("$ENV:")) and not is_namespace_noise(scored):
                         edges.append(NetworkCallEdge(
                             source_file=path, call_type="soap", target=scored,
                             confidence=confidence, line_number=line, raw=raw[:120],
-                            method="POST", path=req_path,
+                            method="POST", path=req_path, tier=tier,
                         ))
 
             # WebClient: webClient.get().uri("/path")

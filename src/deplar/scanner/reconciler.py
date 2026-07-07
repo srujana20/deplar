@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from deplar.scanner.identity import normalize_identity, stem
-from deplar.scanner.resolver import DependencyEdge
+from deplar.scanner.resolver import DependencyEdge, _stronger_tier
 
 
 @dataclass
@@ -138,6 +138,7 @@ class Reconciler:
                         existing.dep_types.append(t)
                 existing.confidence = min(1.0, max(existing.confidence, confidence))
                 existing.evidence.extend(evidence)
+                existing.tier = _stronger_tier(existing.tier, getattr(edge, "tier", ""))
                 for s in edge.surfaces:
                     if s not in existing.surfaces:
                         existing.surfaces.append(s)
@@ -147,6 +148,7 @@ class Reconciler:
                     from_repo=edge.from_repo, to_repo=to,
                     dep_types=list(edge.dep_types), confidence=confidence,
                     evidence=evidence, surfaces=[dict(s) for s in edge.surfaces],
+                    tier=getattr(edge, "tier", ""),
                 )
 
         return list(merged.values()), stats

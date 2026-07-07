@@ -8,6 +8,7 @@ import yaml
 from deplar.graph.store import DependencyGraph
 from deplar.graph.symbol_store import SymbolStore
 from deplar.scanner.ast_parser import ASTParser
+from deplar.scanner.config_scanner import ConfigScanner
 from deplar.scanner.identity import extract_identities
 from deplar.scanner.network_detector import NetworkDetector
 from deplar.scanner.reconciler import AliasCatalog, Reconciler
@@ -60,6 +61,7 @@ class OrgScanner:
         self.verbose = verbose
         self._parser = ASTParser()
         self._detector = NetworkDetector()
+        self._config = ConfigScanner()
         self._routes = RouteDetector()
         self._resolver = DependencyResolver()
         self._symbols = SymbolExtractor()
@@ -78,6 +80,7 @@ class OrgScanner:
 
         import_edges, feign_edges = self._parser.parse(file_map)
         network_edges = self._detector.detect(file_map)
+        network_edges += self._config.scan(config.path)   # config-tier endpoints
         route_edges = self._routes.detect(file_map)
         symbol_index = self._symbols.extract(file_map, config.name)
 
@@ -114,6 +117,7 @@ class OrgScanner:
                     store.upsert_repo(repo.name, str(repo.path), now)
                     store.replace_symbols(repo.name, symbol_index)
                     store.replace_aliases(repo.name, identities)
+                    store.replace_routes(repo.name, route_edges)
             except Exception as e:
                 print(f"  [warn] failed to scan {repo.name}: {e}")
 

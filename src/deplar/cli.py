@@ -51,10 +51,15 @@ def scan(
     parser = ASTParser()
     import_edges, feign_edges = parser.parse(file_map)
 
-    # 3. Detect network calls
+    # 3. Detect network calls + provided routes
     console.print("  [dim]→ detecting network calls...[/dim]")
     detector = NetworkDetector()
     network_edges = detector.detect(file_map)
+
+    from deplar.scanner.config_scanner import ConfigScanner
+    from deplar.scanner.route_detector import RouteDetector
+    network_edges += ConfigScanner().scan(path)   # config-tier endpoints
+    route_edges = RouteDetector().detect(file_map)
 
     # 4. Resolve
     console.print("  [dim]→ resolving dependencies...[/dim]")
@@ -82,6 +87,7 @@ def scan(
                       _dt.datetime.now(_dt.timezone.utc).isoformat())
     store.replace_symbols(repo_name, symbol_index)
     store.replace_dependencies(dep_edges)
+    store.replace_routes(repo_name, route_edges)
     store.replace_aliases(repo_name,
                           [a.as_dict() for a in extract_identities(path, repo_name)])
     store.close()

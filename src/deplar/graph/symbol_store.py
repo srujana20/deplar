@@ -48,7 +48,16 @@ CREATE TABLE IF NOT EXISTS dependencies (
     confidence REAL,
     evidence   TEXT,
     surfaces   TEXT,            -- JSON: HTTP endpoints the consumer hits on the provider
+    tier       TEXT,            -- provenance: call-site | config | inferred | import
     PRIMARY KEY (from_repo, to_repo)
+);
+CREATE TABLE IF NOT EXISTS routes (
+    repo       TEXT NOT NULL,   -- repo that serves this route
+    method     TEXT,            -- GET/POST/... or ANY
+    path       TEXT,            -- normalized template, e.g. /v1/users/{}
+    framework  TEXT,            -- spring | jaxrs | express | nest | fastapi | flask
+    file       TEXT,
+    line       INTEGER
 );
 CREATE TABLE IF NOT EXISTS memory (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,6 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_symbols_repo ON symbols(repo);
 CREATE INDEX IF NOT EXISTS idx_calls_callee ON calls(callee_name);
 CREATE INDEX IF NOT EXISTS idx_deps_to ON dependencies(to_repo);
 CREATE INDEX IF NOT EXISTS idx_deps_from ON dependencies(from_repo);
+CREATE INDEX IF NOT EXISTS idx_routes_repo ON routes(repo);
 CREATE INDEX IF NOT EXISTS idx_memory_repo ON memory(repo);
 CREATE INDEX IF NOT EXISTS idx_aliases_alias ON aliases(alias);
 """
@@ -92,6 +102,8 @@ class SymbolStore:
                 self.conn.execute("PRAGMA table_info(dependencies)").fetchall()}
         if "surfaces" not in cols:
             self.conn.execute("ALTER TABLE dependencies ADD COLUMN surfaces TEXT")
+        if "tier" not in cols:
+            self.conn.execute("ALTER TABLE dependencies ADD COLUMN tier TEXT")
 
     # --- ingestion ---
 
@@ -130,19 +142,20 @@ class SymbolStore:
         for e in edges:
             cur.execute(
                 "INSERT INTO dependencies(from_repo, to_repo, dep_types, "
-                "confidence, evidence, surfaces) VALUES (?,?,?,?,?,?) "
+                "confidence, evidence, surfaces, tier) VALUES (?,?,?,?,?,?,?) "
                 "ON CONFLICT(from_repo, to_repo) DO UPDATE SET "
                 "dep_types=excluded.dep_types, confidence=excluded.confidence, "
-                "evidence=excluded.evidence, surfaces=excluded.surfaces",
+                "evidence=excluded.evidence, surfaces=excluded.surfaces, "
+                "tier=excluded.tier",
                 (e.from_repo, e.to_repo, json.dumps(e.dep_types),
                  e.confidence, json.dumps(e.evidence),
-                 json.dumps(getattr(e, "surfaces", []))),
+                 json.dumps(getattr(e, "surfaces", [])), getattr(e, "tier", "")),
             )
         self.conn.commit()
 
     def all_dependencies(self) -> List[DependencyEdge]:
         rows = self.conn.execute(
-            "SELECT from_repo, to_repo, dep_types, confidence, evidence, surfaces "
+            "SELECT from_repo, to_repo, dep_types, confidence, evidence, surfaces, tier "
             "FROM dependencies"
         ).fetchall()
         return [
@@ -151,12 +164,43 @@ class SymbolStore:
                 dep_types=json.loads(r["dep_types"]),
                 confidence=r["confidence"], evidence=json.loads(r["evidence"]),
                 surfaces=json.loads(r["surfaces"]) if r["surfaces"] else [],
+                tier=r["tier"] or "",
             ) for r in rows
         ]
 
     def clear_dependencies(self):
         self.conn.execute("DELETE FROM dependencies")
         self.conn.commit()
+
+    # --- provided HTTP routes (what each repo serves) ---
+
+    def replace_routes(self, repo: str, routes: list):
+        """Replace a repo's provided routes (idempotent re-scan). Each item is a
+        RouteEdge or a dict with method/path/framework/file/line."""
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM routes WHERE repo = ?", (repo,))
+
+        def f(r, k, default=""):
+            return getattr(r, k, None) if not isinstance(r, dict) else r.get(k, default)
+
+        rows = []
+        for r in routes:
+            src = f(r, "source_file")
+            file = getattr(src, "name", None) if src is not None else f(r, "file")
+            rows.append((repo, f(r, "method"), f(r, "path"), f(r, "framework"),
+                         file or "", f(r, "line_number") or f(r, "line") or 0))
+        cur.executemany(
+            "INSERT INTO routes(repo, method, path, framework, file, line) "
+            "VALUES (?,?,?,?,?,?)", rows,
+        )
+        self.conn.commit()
+
+    def routes_for_repo(self, repo: str) -> List[dict]:
+        rows = self.conn.execute(
+            "SELECT method, path, framework, file, line FROM routes "
+            "WHERE repo = ? ORDER BY path, method", (repo,)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     # --- identity catalog (what each repo advertises itself as) ---
 
@@ -220,21 +264,21 @@ class SymbolStore:
 
     def get_dependencies(self, repo: str) -> List[dict]:
         rows = self.conn.execute(
-            "SELECT to_repo, dep_types, confidence, surfaces FROM dependencies "
+            "SELECT to_repo, dep_types, confidence, surfaces, tier FROM dependencies "
             "WHERE from_repo = ? ORDER BY confidence DESC", (repo,)
         ).fetchall()
         return [{"repo": r["to_repo"], "types": json.loads(r["dep_types"]),
-                 "confidence": r["confidence"],
+                 "confidence": r["confidence"], "tier": r["tier"] or "",
                  "surfaces": json.loads(r["surfaces"]) if r["surfaces"] else []}
                 for r in rows]
 
     def get_dependents(self, repo: str) -> List[dict]:
         rows = self.conn.execute(
-            "SELECT from_repo, dep_types, confidence, surfaces FROM dependencies "
+            "SELECT from_repo, dep_types, confidence, surfaces, tier FROM dependencies "
             "WHERE to_repo = ? ORDER BY confidence DESC", (repo,)
         ).fetchall()
         return [{"repo": r["from_repo"], "types": json.loads(r["dep_types"]),
-                 "confidence": r["confidence"],
+                 "confidence": r["confidence"], "tier": r["tier"] or "",
                  "surfaces": json.loads(r["surfaces"]) if r["surfaces"] else []}
                 for r in rows]
 
