@@ -63,9 +63,26 @@ def test_reconcile_merges_duplicates_after_binding():
     assert stats.merged == 1
 
 
-def test_reconcile_leaves_external_libs_unresolved():
+def test_reconcile_drops_unresolved_import_edges():
+    # an import that resolves to no known repo (a lib/constant/DTO) is dropped
     cat = _catalog(("orders", "order-management"))
     edges = [DependencyEdge("checkout", "requests", ["import"], 0.6, [])]
     resolved, stats = Reconciler().reconcile(edges, cat)
     assert stats.unresolved == 1
-    assert resolved[0].to_repo == "requests"
+    assert resolved == []
+
+
+def test_reconcile_keeps_import_that_resolves_to_a_repo():
+    # a genuine cross-repo import survives (rare but real)
+    cat = _catalog(("orders", "orders"))
+    edges = [DependencyEdge("checkout", "orders", ["import"], 0.6, [])]
+    resolved, _ = Reconciler().reconcile(edges, cat)
+    assert [e.to_repo for e in resolved] == ["orders"]
+
+
+def test_reconcile_keeps_unresolved_runtime_edge():
+    # a runtime call (http) to an unknown host stays as an external service
+    cat = _catalog(("orders", "order-management"))
+    edges = [DependencyEdge("checkout", "stripe.com", ["http"], 1.0, [])]
+    resolved, _ = Reconciler().reconcile(edges, cat)
+    assert [e.to_repo for e in resolved] == ["stripe.com"]

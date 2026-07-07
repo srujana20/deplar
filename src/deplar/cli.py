@@ -65,6 +65,10 @@ def scan(
     console.print("  [dim]→ resolving dependencies...[/dim]")
     resolver = DependencyResolver()
     dep_edges = resolver.resolve(repo_name, import_edges, feign_edges, network_edges)
+    # imports only count as dependencies once validated against a corpus
+    # (scan-org). A single-repo scan can't tell a sibling service from a
+    # constant/DTO/framework import, so drop import-only edges here.
+    dep_edges = [e for e in dep_edges if e.dep_types != ["import"]]
 
     # 5. Extract symbols (classes, methods, call sites)
     console.print("  [dim]→ extracting symbols...[/dim]")

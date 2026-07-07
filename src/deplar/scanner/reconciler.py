@@ -117,6 +117,14 @@ class Reconciler:
                 evidence.append(f"resolved:{match.reason}({match.source})")
                 stats.resolved += 1
             else:
+                # An import that doesn't resolve to a known repo is not a
+                # dependency — it's a constant, enum, DTO, framework class or
+                # stdlib symbol. Drop it (a real cross-repo import survives via
+                # the `match` branch above). Runtime signals (http/feign/…) to an
+                # unknown host are kept as legitimate external services.
+                if list(edge.dep_types) == ["import"]:
+                    stats.unresolved += 1
+                    continue
                 # was it a self-reference we couldn't bind elsewhere?
                 self_match = catalog.resolve(edge.to_repo)
                 if drop_self and self_match and self_match.repo == edge.from_repo:
