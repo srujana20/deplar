@@ -70,6 +70,7 @@ def build_ui_data(store: SymbolStore) -> dict:
             out.append({
                 "method": s.get("method", "ANY"), "path": s.get("path", ""),
                 "key": s.get("key", ""), "matched": bool(s.get("matched")),
+                "match_kind": s.get("match_kind", "none"),
                 "evidence": s.get("evidence", ""),
             })
         return out
@@ -659,9 +660,14 @@ function esc(s){ return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','
 function verbBadge(m){ const v=(m||'ANY').toLowerCase();
   const cls=['get','post','put','patch','delete','soap','any'].includes(v)?v:'any';
   return `<span class="verb ${cls}">${esc((m||'ANY').toUpperCase())}</span>`; }
-function epRow(method, path, matched, note){
-  const dot = matched===null ? '' : `<i class="dot ${matched?'ok':'gap'}" title="${matched?'matched to a provider route':'no matching provider route'}"></i>`;
-  return `<div class="ep">${verbBadge(method)}<code>${esc(path||'/')}</code>${dot}${note?`<span class="mini">${esc(note)}</span>`:''}</div>`;
+function epRow(method, path, matched, note, kind){
+  const prefix = kind==='prefix';
+  const title = matched===null ? '' : (matched
+      ? (prefix ? 'matched by path suffix — base-path/gateway prefix differs' : 'matched to a provider route')
+      : 'no matching provider route');
+  const dot = matched===null ? '' : `<i class="dot ${matched?'ok':'gap'}" title="${title}"></i>`;
+  const approx = prefix ? '<span class="mini" title="'+title+'">≈</span>' : '';
+  return `<div class="ep">${verbBadge(method)}<code>${esc(path||'/')}</code>${dot}${approx}${note?`<span class="mini">${esc(note)}</span>`:''}</div>`;
 }
 /* group: a peer repo + the endpoints exchanged with it. titleHtml is trusted HTML. */
 function confBadge(c){ return c==null?'':
@@ -706,7 +712,7 @@ function selectNode(n){
 
   // Calls — outbound edges, each with the endpoints hit on that target
   const callsHtml = outs.length ? outs.map(e=>{
-    const rows = (e.surfaces||[]).map(s=>epRow(s.method,s.path,s.matched, s.evidence)).join('');
+    const rows = (e.surfaces||[]).map(s=>epRow(s.method,s.path,s.matched, s.evidence, s.match_kind)).join('');
     return group(`<span class="arrow">→</span> ${rlink(e.target)}`,
       `${tierChip(e.tier)}<span class="tag ${byId[e.target]&&byId[e.target].external?'ext':''}">${e.types.join(', ')}</span>`,
       e.confidence, rows);
@@ -714,7 +720,7 @@ function selectNode(n){
 
   // Called by — inbound edges, each with the endpoints the caller hits on us
   const calledHtml = ins.length ? ins.map(e=>{
-    const rows = (e.surfaces||[]).map(s=>epRow(s.method,s.path,s.matched)).join('');
+    const rows = (e.surfaces||[]).map(s=>epRow(s.method,s.path,s.matched,'',s.match_kind)).join('');
     return group(`<span class="arrow">←</span> ${rlink(e.source)}`,
       `<span class="tag">${e.types.join(', ')}</span>`, e.confidence, rows);
   }).join('') : empty;

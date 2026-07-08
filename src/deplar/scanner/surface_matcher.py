@@ -21,8 +21,14 @@ from deplar.scanner.route_detector import RouteEdge
 @dataclass
 class MatchStats:
     surfaces_total: int = 0
-    surfaces_matched: int = 0      # consumer call bound to a concrete provider route
-    surfaces_unmatched: int = 0    # provider resolved, but route not found (gap)
+    surfaces_matched: int = 0        # consumer call bound to a provider route
+    surfaces_prefix_matched: int = 0  # of those, bound via a segment-suffix fallback
+    surfaces_unmatched: int = 0      # provider resolved, but route not found (gap)
+
+
+def _verb_ok(verbs: set, method: str) -> bool:
+    m = (method or "ANY").upper()
+    return m == "ANY" or "ANY" in verbs or m in verbs
 
 
 class RouteIndex:
@@ -41,12 +47,43 @@ class RouteIndex:
     def routes_for(self, repo: str) -> List[RouteEdge]:
         return self._routes.get(repo, [])
 
+    def match_kind(self, repo: str, method: str, path: str) -> str:
+        """How a consumer's (method, path) binds to a route this repo provides:
+
+            "exact"  — same normalized path, compatible verb
+            "prefix" — one path is a segment-boundary suffix of the other, i.e.
+                       they differ only by a leading prefix. This is the residual
+                       context-path / gateway-rewrite case: a base we couldn't
+                       resolve statically left one side longer than the other.
+            ""       — no match
+
+        The suffix fallback is scoped to a single repo's own routes (the edge is
+        already bound to `repo` by identity), so `/create-pnr` can only match the
+        provider it was resolved to — not every service that serves that path.
+        """
+        by = self._by_repo.get(repo)
+        if not by:
+            return ""
+        p = normalize_path(path)
+
+        verbs = by.get(p)
+        if verbs and _verb_ok(verbs, method):
+            return "exact"
+
+        # segment-boundary suffix: since every normalized path starts with "/",
+        # `longer.endswith(shorter)` can only align on a "/" boundary — so
+        # "/x/create-pnr" matches "/create-pnr" but "/foo-create-pnr" does not.
+        if p != "/":
+            for rp, rverbs in by.items():
+                if rp == "/" or not _verb_ok(rverbs, method):
+                    continue
+                longer, shorter = (p, rp) if len(p) >= len(rp) else (rp, p)
+                if longer.endswith(shorter):
+                    return "prefix"
+        return ""
+
     def matches(self, repo: str, method: str, path: str) -> bool:
-        verbs = self._by_repo.get(repo, {}).get(normalize_path(path))
-        if not verbs:
-            return False
-        m = (method or "ANY").upper()
-        return m == "ANY" or "ANY" in verbs or m in verbs
+        return bool(self.match_kind(repo, method, path))
 
 
 class SurfaceMatcher:
@@ -58,11 +95,15 @@ class SurfaceMatcher:
         for edge in edges:
             for s in edge.surfaces:
                 stats.surfaces_total += 1
-                hit = index.matches(edge.to_repo, s.get("method", "ANY"),
-                                    s.get("path", ""))
-                s["matched"] = hit
-                if hit:
+                kind = index.match_kind(edge.to_repo, s.get("method", "ANY"),
+                                        s.get("path", ""))
+                s["matched"] = bool(kind)
+                s["match_kind"] = kind or "none"
+                if kind == "exact":
                     stats.surfaces_matched += 1
+                elif kind == "prefix":
+                    stats.surfaces_matched += 1
+                    stats.surfaces_prefix_matched += 1
                 else:
                     stats.surfaces_unmatched += 1
         return stats
@@ -110,6 +151,7 @@ def build_interface_manifest(
                 "key": endpoint_key(s.get("method", ""), s.get("path", "")),
                 "target": edge.to_repo,
                 "matched": s.get("matched", False),
+                "match_kind": s.get("match_kind", "none"),
                 "evidence": s.get("evidence", ""),
             })
     return manifest

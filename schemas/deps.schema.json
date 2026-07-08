@@ -59,6 +59,7 @@
                 "path":     { "type": "string" },
                 "key":      { "type": "string" },
                 "matched":  { "type": "boolean" },
+                "match_kind": { "type": "string", "enum": ["exact", "prefix", "none"], "description": "How the call bound to the provider route: exact path, a segment-suffix prefix fallback (differing base/context path), or none." },
                 "evidence": { "type": "string" }
               }
             }

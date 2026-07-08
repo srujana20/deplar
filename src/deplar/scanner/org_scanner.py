@@ -8,6 +8,7 @@ import yaml
 from deplar.graph.store import DependencyGraph
 from deplar.graph.symbol_store import SymbolStore
 from deplar.scanner.ast_parser import ASTParser
+from deplar.scanner.base_path_detector import apply_base_paths, detect_base_paths
 from deplar.scanner.config_scanner import ConfigScanner
 from deplar.scanner.identity import extract_identities
 from deplar.scanner.network_detector import NetworkDetector
@@ -82,6 +83,9 @@ class OrgScanner:
         network_edges = self._detector.detect(file_map)
         network_edges += self._config.scan(config.path)   # config-tier endpoints
         route_edges = self._routes.detect(file_map)
+        # Fold the server context path / base prefix into each provided route so
+        # the recorded surface is the real external one (see base_path_detector).
+        apply_base_paths(route_edges, detect_base_paths(config.path))
         symbol_index = self._symbols.extract(file_map, config.name)
 
         edges = self._resolver.resolve(

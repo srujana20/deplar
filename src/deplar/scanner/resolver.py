@@ -14,6 +14,28 @@ def _stronger_tier(a: str, b: str) -> str:
     return a if _TIER_RANK.get(a, 0) >= _TIER_RANK.get(b, 0) else b
 
 
+# Import of a *value holder* — a class/module that carries constants, enums,
+# DTOs, config or types, never a callable service. These are not dependencies
+# even when their name overlaps a repo (e.g. `com.airline.pss.PnrConstants`
+# would otherwise bind to the `pss` repo). Matched against the final segment of
+# the import path across Java (a.b.C), Python (a.b.c) and TS (a/b/c).
+_VALUE_HOLDER_SUFFIXES = (
+    "constants", "constant", "const", "enums", "enum",
+    "dtos", "dto", "models", "model", "entities", "entity",
+    "configuration", "configs", "config", "settings", "properties",
+    "exceptions", "exception", "errors", "error",
+    "utils", "util", "helpers", "helper", "mappers", "mapper",
+    "types", "type", "schemas", "schema", "vo", "pojo",
+)
+
+
+def _is_value_holder(module: str) -> bool:
+    seg = re.split(r"[./\\]", (module or "").strip())[-1].lower()
+    if not seg:
+        return False
+    return any(seg == s or seg.endswith(s) for s in _VALUE_HOLDER_SUFFIXES)
+
+
 @dataclass
 class DependencyEdge:
     from_repo: str
@@ -22,7 +44,8 @@ class DependencyEdge:
     confidence: float
     evidence: List[str] = field(default_factory=list)
     # HTTP surfaces the consumer hits on the provider; each is
-    # {"channel","method","path","key","matched","evidence"}.
+    # {"channel","method","path","key","matched","match_kind","evidence"}.
+    # match_kind: "exact" | "prefix" (segment-suffix fallback) | "none".
     surfaces: List[dict] = field(default_factory=list)
     # strongest provenance tier across this edge's signals (see network_detector)
     tier: str = ""
@@ -91,6 +114,9 @@ class DependencyResolver:
                     "evidence": evidence}
 
         for e in import_edges:
+            # a constants/enum/DTO/config/type import is not a service dependency
+            if _is_value_holder(e.imported_module):
+                continue
             add(e.imported_module, "import", 0.6,
                 f"{e.source_file.name}:{e.line_number}", tier="import")
 

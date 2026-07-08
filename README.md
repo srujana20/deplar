@@ -79,6 +79,8 @@ deplar detects both what a service **consumes** and what it **provides**, then j
 | NestJS (JS/TS) | `@Controller('users')` + `@Get(':id')` |
 | FastAPI / Flask (Py) | `@app.get("/v1/users/{id}")`, `@app.route("/x", methods=["POST"])` |
 
+A provided route is recorded as its **full external path**, not just the controller mapping. For Spring, deplar reads the server base prefix from config — `server.servlet.context-path` (Boot 2+), `server.context-path` (Boot 1.x), plus `spring.mvc.servlet.path` / `spring.webflux.base-path` — and folds it in. So `@PostMapping("/create-pnr")` in a service configured with `server.servlet.context-path=/pss-api` is recorded as `POST /pss-api/create-pnr`, matching what a consumer actually calls. `${VAR:default}` placeholders resolve to their literal default. (Express mount prefixes are already handled per-file; Nest/FastAPI code-set prefixes are a known gap.)
+
 Each dependency gets a confidence score. High confidence means a concrete runtime signal was found. Lower confidence means the tool found a likely signal that needs a human eye.
 
 ### Signal quality — what does *not* become a dependency
@@ -87,6 +89,7 @@ deplar is deliberately strict about what counts as a real edge:
 
 - **Call-site only.** A URL counts only when it's the argument to a recognized network call — `.get(`/`.post(`, `RestTemplate.exchange`, `new URL(...).openConnection()`, an OkHttp `Request.Builder().url(...)`, a SOAP `marshalSendAndReceive`, or a config property. A string that merely *looks* like a URL elsewhere in a file never enters the graph.
 - **Provenance tiers.** Every edge carries a `tier`: `call-site` (literal/resolved URL at a call — highest), `config` (declared in a properties/YAML file — high), or `inferred` (a call whose host we couldn't resolve — low).
+- **Value-holder imports are dropped.** An import of a constants / enum / DTO / model / config / exception / util / type class is never a service dependency — even when its name overlaps a repo (an `import com.airline.pss.PnrConstants` in another service does *not* become an edge to `pss`). Imports are the weakest signal to begin with, and only a genuine cross-repo client import survives (in `scan-org`, once it resolves to a known repo).
 - **Namespace denylist.** XML/SOAP namespace URIs (`w3.org`, `xmlsoap.org`, `apache.org/xml/features`, `xml.org/sax/features`, `xmlns.example.com`) are dropped outright — they account for most SOAP-repo noise.
 - **gRPC needs evidence.** A `.insecure_channel(...)` only tags as gRPC when the file actually imports the grpc runtime — not on the method name alone.
 - **Infra URLs are skipped.** `jdbc:`, `redis:`, `amqp:`, Kafka bootstrap lists etc. in config are not HTTP dependencies (they belong to the future db/queue signals).
@@ -101,6 +104,14 @@ deplar doesn't stop at "A depends on B." It folds every consumer call and every
 provider route to a canonical key (`GET /v1/orders/{}` — path params collapsed),
 then matches them. The result: it knows A calls B's *specific* `POST /v1/charge`,
 not just that A calls B.
+
+Matches are either **exact** or, as a fallback, **prefix**: when the two paths
+differ only by a leading segment (a context path injected at deploy time, a
+gateway rewrite) one is accepted as a segment-boundary suffix of the other. The
+fallback is scoped to the single provider the call is already bound to, so
+`/create-pnr` can only match that provider — not every service serving that
+path. Prefix matches are marked `≈` in the UI and carry `match_kind: "prefix"`
+in `surfaces[]`, so an exact contract match is never confused with an inferred one.
 
 Two artifacts come out of a `scan-org`:
 
