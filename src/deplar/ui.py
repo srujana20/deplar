@@ -208,6 +208,9 @@ _TEMPLATE = r"""<!doctype html>
   .edge.low { stroke-dasharray:5 4; opacity:.5; }
   .edge.hi { stroke-width:2; }
   .edge.hot { stroke:var(--accent); stroke-width:2.4; opacity:1; }
+  .edge.mute { opacity:.05; }
+  .grp.epgrp { cursor:pointer; transition:box-shadow .15s; }
+  .grp.epgrp:hover { box-shadow:inset 3px 0 0 var(--accent); }
   .node .core { stroke:var(--bg); stroke-width:2.5; cursor:pointer; }
   .node.repo .core { fill:url(#node-internal); }
   .node.ext .core { fill:url(#node-external); }
@@ -654,8 +657,26 @@ function clearSelect(){ selected=null;
   document.getElementById("detail").style.display="none";
   document.getElementById("hint").style.display="";
   NODES.forEach(x=>{ const g=nodeEls[x.id]; if(g){ g.classList.remove("dim","sel"); }});
-  edgeEls.forEach(ln=>ln.classList.remove("hot"));
+  edgeEls.forEach(ln=>ln.classList.remove("hot","mute"));
   applyFilters(); }
+/* default highlight for a selected node: dim non-neighbours, heat its edges */
+function applySelectionHighlight(n,outs,ins){
+  const near=new Set([n.id, ...outs.map(e=>e.target), ...ins.map(e=>e.source)]);
+  NODES.forEach(x=>{ const g=nodeEls[x.id];
+    g.classList.toggle("dim", !near.has(x.id));
+    g.classList.toggle("sel", x.id===n.id); });
+  edgeEls.forEach(ln=>{ const e=ln.__e; ln.classList.remove("mute");
+    ln.classList.toggle("hot", e.source===n.id||e.target===n.id); });
+}
+/* isolate the callers of one endpoint: light only their edges into nodeId */
+function spotlightCallers(nodeId, callerIds){
+  const cs=new Set(callerIds);
+  edgeEls.forEach(ln=>{ const e=ln.__e;
+    const on=(e.target===nodeId && cs.has(e.source));
+    ln.classList.toggle("hot", on); ln.classList.toggle("mute", !on); });
+  NODES.forEach(x=>{ const g=nodeEls[x.id];
+    g.classList.toggle("dim", x.id!==nodeId && !cs.has(x.id)); });
+}
 function esc(s){ return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function verbBadge(m){ const v=(m||'ANY').toLowerCase();
   const cls=['get','post','put','patch','delete','soap','any'].includes(v)?v:'any';
@@ -718,12 +739,31 @@ function selectNode(n){
       e.confidence, rows);
   }).join('') : empty;
 
-  // Called by — inbound edges, each with the endpoints the caller hits on us
-  const calledHtml = ins.length ? ins.map(e=>{
-    const rows = (e.surfaces||[]).map(s=>epRow(s.method,s.path,s.matched,'',s.match_kind)).join('');
-    return group(`<span class="arrow">←</span> ${rlink(e.source)}`,
-      `<span class="tag">${e.types.join(', ')}</span>`, e.confidence, rows);
-  }).join('') : empty;
+  // Called by — pivoted on the ENDPOINT each caller hits, not the caller. Two
+  // services calling the same host on different endpoints land in different
+  // groups, so a shared host never reads as "these callers are coupled".
+  const epMap = new Map();   // "VERB /path" -> {method,path,callers:[]}
+  const noEp = [];           // inbound edges with no http surface (kafka, unresolved)
+  ins.forEach(e=>{
+    const hs = (e.surfaces||[]).filter(s=>(s.method||s.path));
+    if(!hs.length){ noEp.push(e); return; }
+    hs.forEach(s=>{
+      const k=(s.method||'ANY')+' '+(s.path||'/');
+      let g=epMap.get(k); if(!g){ g={method:s.method,path:s.path,callers:[]}; epMap.set(k,g); }
+      if(!g.callers.includes(e.source)) g.callers.push(e.source);
+    });
+  });
+  const epGroups=[...epMap.values()];
+  const calledHtml = (epGroups.length||noEp.length) ? (
+    (epGroups.length?`<div class="mini" style="margin:-2px 0 6px">grouped by endpoint · hover a group to isolate its callers</div>`:'')
+    + epGroups.map((g,i)=>`<div class="grp epgrp" id="epgrp-${i}">
+        <div class="grp-h"><b>${verbBadge(g.method)}<code>${esc(g.path||'/')}</code></b>
+          <span class="mini">${g.callers.length} caller${g.callers.length>1?'s':''}</span></div>
+        <div class="grp-eps">${g.callers.map(c=>`<div class="ep"><span class="arrow">←</span> ${rlink(c)}</div>`).join('')}</div>
+      </div>`).join('')
+    + noEp.map(e=>group(`<span class="arrow">←</span> ${rlink(e.source)}`,
+        `<span class="tag">${e.types.join(', ')}</span>`, e.confidence, '')).join('')
+  ) : empty;
 
   // Impact — who must be coordinated if this service changes (grouped by hop depth)
   const depth = blastDepths(n.id);
@@ -805,12 +845,12 @@ function selectNode(n){
   if(cp) cp.onclick=()=>{ try{ navigator.clipboard.writeText(cp.dataset.cmd); cp.classList.add("ok");
     setTimeout(()=>cp.classList.remove("ok"),1200);}catch(e){} };
 
-  const near=new Set([n.id, ...outs.map(e=>e.target), ...ins.map(e=>e.source)]);
-  NODES.forEach(x=>{ const g=nodeEls[x.id];
-    g.classList.toggle("dim", !near.has(x.id));
-    g.classList.toggle("sel", x.id===n.id); });
-  edgeEls.forEach(ln=>{ const e=ln.__e;
-    ln.classList.toggle("hot", e.source===n.id||e.target===n.id); });
+  applySelectionHighlight(n,outs,ins);
+  // hover an endpoint group -> spotlight only the callers of that endpoint
+  epGroups.forEach((g,i)=>{ const el=document.getElementById("epgrp-"+i); if(!el) return;
+    el.addEventListener("mouseenter",()=>spotlightCallers(n.id,g.callers));
+    el.addEventListener("mouseleave",()=>applySelectionHighlight(n,outs,ins));
+  });
 }
 boot();
 </script>
