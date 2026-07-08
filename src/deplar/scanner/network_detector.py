@@ -482,6 +482,28 @@ def _resolve_java_target(node: Node, source: bytes, var_map: Dict[str, str]) -> 
     return "".join(lits) if lits else _node_text(node, source)
 
 
+def _first_arg_is_url_like(node: Node, source: bytes,
+                           var_map: Dict[str, str]) -> bool:
+    """True if a call's first argument denotes an endpoint (URL / URI / path),
+    not an arbitrary value like a Map key. This is what tells
+    `restTemplate.put(url, body)` apart from `map.put(key, value)` — the receiver
+    *name* can't (a `HashMap` named `clientHeaders` looks client-ish)."""
+    resolved = _resolve_java_target(node, source, var_map).strip()
+    if resolved:
+        if resolved.startswith(("http://", "https://", "$ENV:")) or "://" in resolved:
+            return True
+        if resolved.startswith("/"):                       # a request path
+            return True
+        # a templated url/path from concatenation or String.format
+        if "/" in resolved and any(t in resolved for t in ("{}", "%s", "%d")):
+            return True
+    # an unresolved variable whose *name* implies an endpoint
+    if node.type == "identifier":
+        nm = _node_text(node, source).lower()
+        return bool(re.search(r"url|uri|endpoint|host|path|address|link", nm))
+    return False
+
+
 def detect_java_network_calls(path: Path) -> List[NetworkCallEdge]:
     source = path.read_bytes()
     parser = Parser(JAVA_LANGUAGE)
@@ -528,11 +550,15 @@ def detect_java_network_calls(path: Path) -> List[NetworkCallEdge]:
                         verb = m.group(1).upper()
                 add_http(verb, args[0], line, raw)
 
-            # RestTemplate getForObject/postForEntity/put/delete(url, ...)
+            # RestTemplate getForObject/postForEntity/put/delete(url, ...).
+            # Bare put/delete collide with Map.put / repository.delete etc, so
+            # for those we require the FIRST ARGUMENT to look like an endpoint —
+            # a real RestTemplate call passes a URL/path there, map.put passes a
+            # key. (Receiver-name guessing false-matched maps like `clientHeaders`.)
             elif name in JAVA_REST_VERBS and args:
-                receiver_ok = (name not in _JAVA_AMBIGUOUS
-                               or re.search(r'rest|template|client', obj_text, re.I))
-                if receiver_ok:
+                ok = (name not in _JAVA_AMBIGUOUS
+                      or _first_arg_is_url_like(args[0], source, var_map))
+                if ok:
                     add_http(JAVA_REST_VERBS[name], args[0], line, raw)
 
             # OkHttp: new Request.Builder().url("...") — require a builder chain,

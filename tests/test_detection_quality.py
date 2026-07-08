@@ -67,6 +67,50 @@ class TestCallSiteGating:
         assert any("svc.internal" in e.target for e in calls)
 
 
+class TestBareVerbNotMapMutation:
+    """`put`/`delete` are also Map/DAO methods. They only count as HTTP when the
+    first argument looks like an endpoint — not an arbitrary key/entity."""
+
+    def test_map_put_is_not_an_http_put(self, tmp_path):
+        calls = _java(tmp_path, """
+        class C { void a(){
+          java.util.HashMap<String,String> request = new java.util.HashMap<>();
+          request.put("Authorization", "Bearer x");
+          request.put("userId", id);
+        }}""")
+        assert calls == []
+
+    def test_client_named_map_still_not_captured(self, tmp_path):
+        # receiver name contains "client"/"rest" but it's a plain map
+        calls = _java(tmp_path, """
+        class C { void a(){
+          var clientHeaders = new java.util.HashMap<String,String>();
+          clientHeaders.put("k", "v");
+          var restRequest = new java.util.HashMap<String,Object>();
+          restRequest.put("field", val);
+        }}""")
+        assert calls == []
+
+    def test_dao_delete_and_cache_put_dropped(self, tmp_path):
+        calls = _java(tmp_path, """
+        class C { void a(){
+          userRepository.delete(entity);
+          cache.put("session:" + id, value);
+        }}""")
+        assert calls == []
+
+    def test_real_resttemplate_put_delete_kept(self, tmp_path):
+        calls = _java(tmp_path, """
+        class C { void a(){
+          restTemplate.put("http://pss.internal/v1/pnr", body);
+          client.delete("/v1/orders/" + id);
+          restTemplate.delete(endpoint);
+        }}""")
+        verbs = sorted(e.method for e in calls)
+        assert verbs == ["DELETE", "DELETE", "PUT"]
+        assert any("pss.internal" in e.target for e in calls)
+
+
 class TestGrpcEvidence:
     def test_requires_grpc_import(self, tmp_path):
         with_imp = tmp_path / "a.py"
