@@ -59,6 +59,19 @@ CREATE TABLE IF NOT EXISTS routes (
     file       TEXT,
     line       INTEGER
 );
+CREATE TABLE IF NOT EXISTS route_calls (
+    repo        TEXT NOT NULL,   -- repo serving the endpoint
+    ep_method   TEXT,            -- provided endpoint verb
+    ep_path     TEXT,            -- provided endpoint path (full external)
+    target      TEXT,            -- external repo/host the handler reaches
+    method      TEXT,            -- outbound verb
+    path        TEXT,            -- outbound path
+    key         TEXT,            -- canonical "VERB /path"
+    hops        INTEGER,         -- call-graph distance (0 = direct in handler)
+    confidence  REAL,
+    matched     INTEGER,         -- bound to a provider route (0/1)
+    via         TEXT             -- JSON: handler..sink method chain
+);
 CREATE TABLE IF NOT EXISTS memory (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     repo       TEXT NOT NULL,
@@ -80,6 +93,7 @@ CREATE INDEX IF NOT EXISTS idx_calls_callee ON calls(callee_name);
 CREATE INDEX IF NOT EXISTS idx_deps_to ON dependencies(to_repo);
 CREATE INDEX IF NOT EXISTS idx_deps_from ON dependencies(from_repo);
 CREATE INDEX IF NOT EXISTS idx_routes_repo ON routes(repo);
+CREATE INDEX IF NOT EXISTS idx_route_calls_repo ON route_calls(repo);
 CREATE INDEX IF NOT EXISTS idx_memory_repo ON memory(repo);
 CREATE INDEX IF NOT EXISTS idx_aliases_alias ON aliases(alias);
 """
@@ -201,6 +215,44 @@ class SymbolStore:
             "WHERE repo = ? ORDER BY path, method", (repo,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # --- endpoint fan-out (external calls each provided endpoint reaches) ---
+
+    def replace_route_calls(self, repo: str, fanout: dict):
+        """Replace a repo's endpoint fan-out. `fanout` is {endpoint_key: [call]}
+        where endpoint_key is "VERB /path" and each call is a fanout dict."""
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM route_calls WHERE repo = ?", (repo,))
+        rows = []
+        for ep, calls in fanout.items():
+            method, _, path = ep.partition(" ")
+            for c in calls:
+                rows.append((
+                    repo, method, path, c.get("target", ""), c.get("method", ""),
+                    c.get("path", ""), c.get("key", ""), c.get("hops", 0),
+                    c.get("confidence", 0.0), 1 if c.get("matched") else 0,
+                    json.dumps(c.get("via", [])),
+                ))
+        cur.executemany(
+            "INSERT INTO route_calls(repo, ep_method, ep_path, target, method, "
+            "path, key, hops, confidence, matched, via) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows,
+        )
+        self.conn.commit()
+
+    def route_calls_for_repo(self, repo: str) -> List[dict]:
+        rows = self.conn.execute(
+            "SELECT ep_method, ep_path, target, method, path, key, hops, "
+            "confidence, matched, via FROM route_calls WHERE repo = ? "
+            "ORDER BY ep_path, ep_method, hops", (repo,)
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["matched"] = bool(d["matched"])
+            d["via"] = json.loads(d["via"]) if d["via"] else []
+            out.append(d)
+        return out
 
     # --- identity catalog (what each repo advertises itself as) ---
 

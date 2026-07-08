@@ -130,6 +130,21 @@ deplar impact user-service --endpoint "DELETE /v1/users/{id}"
 #   Directly affected: none detected
 ```
 
+### Endpoint fan-out — what each of *my* endpoints calls
+
+The mirror of surface matching: for every endpoint a repo **provides**, deplar
+traces the intra-repo call graph from that handler to the external APIs it
+reaches — so you can see that `POST /pss-api/create-pnr` fans out to
+`doli POST /create-pnr` (2 hops, via `createPnr → createPnrRecord → postCreate`).
+
+Each provided endpoint in `org-interfaces.json` (and the UI's **Provides** panel)
+carries a `calls[]` list of `{target, method, path, hops, confidence, matched, via}`.
+The trace anchors the handler and each outbound call to their enclosing methods
+(by line-span) and walks the call graph between them. Resolution is **name-based**,
+so hop counts and a decaying `confidence` are attached — treat 2+-hop links as
+strong hints, not proof. Fan-out through async/event/queue boundaries is not
+followed (that's a separate signal).
+
 ---
 
 ## Identity resolution — no manual name mapping

@@ -56,11 +56,20 @@ def build_ui_data(store: SymbolStore) -> dict:
             for s in syms
         ]
         n["languages"] = sorted({s["language"] for s in syms if s.get("language")})
+        # endpoint fan-out: external calls each provided endpoint reaches
+        rc: dict = {}
+        for c in store.route_calls_for_repo(r["name"]):
+            rc.setdefault((c["ep_method"], c["ep_path"]), []).append({
+                "target": c["target"], "method": c["method"], "path": c["path"],
+                "key": c["key"], "hops": c["hops"], "confidence": c["confidence"],
+                "matched": c["matched"], "via": c["via"],
+            })
         # HTTP routes this repo serves (what it provides)
         n["provides"] = [
             {"method": rt["method"] or "ANY", "path": rt["path"] or "/",
              "framework": rt.get("framework", ""),
-             "file": rt.get("file", ""), "line": rt.get("line", 0)}
+             "file": rt.get("file", ""), "line": rt.get("line", 0),
+             "calls": rc.get((rt["method"], rt["path"]), [])}
             for rt in store.routes_for_repo(r["name"])
         ]
 
@@ -721,11 +730,18 @@ function selectNode(n){
 
   // Provides — the API this service serves
   const provides = (n.provides||[]);
-  const provHtml = provides.length ? provides.map(p=>
-      `<div class="ep">${verbBadge(p.method)}<code>${esc(p.path)}</code>
+  const hops=h=> h===0?'direct':h+' hop'+(h>1?'s':'');
+  const provHtml = provides.length ? provides.map(p=>{
+    const fo=(p.calls||[]);
+    // external APIs this endpoint's handler fans out to (via the call graph)
+    const foHtml = fo.length ? `<div class="grp-eps" style="margin:2px 0 8px 14px">`+
+      fo.map(c=>`<div class="ep"><span class="arrow">↳</span>${verbBadge(c.method)}<code>${esc(c.path||'/')}</code>
+        ${c.matched?'<i class="dot ok" title="bound to a provider route"></i>':''}
+        <span class="mini" title="${esc((c.via||[]).join(' → '))}">${rlink(c.target)} · ${hops(c.hops)}</span></div>`).join('')+`</div>` : '';
+    return `<div class="ep">${verbBadge(p.method)}<code>${esc(p.path)}</code>
         <span class="badge ${p.consumed?'used':'unused'}">${p.consumed?'consumed':'unused'}</span>
-        <span class="mini">${esc(p.framework||'')}${p.file?' · '+esc(p.file)+':'+p.line:''}</span></div>`
-    ).join('') : empty;
+        <span class="mini">${esc(p.framework||'')}${p.file?' · '+esc(p.file)+':'+p.line:''}</span></div>`+foHtml;
+    }).join('') : empty;
 
   const tierChip=t=> t==='config'
       ? '<span class="tag" style="border-color:var(--accent);color:var(--accent)">config</span>'

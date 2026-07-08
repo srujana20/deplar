@@ -10,6 +10,8 @@ from deplar.graph.symbol_store import SymbolStore
 from deplar.scanner.ast_parser import ASTParser
 from deplar.scanner.base_path_detector import apply_base_paths, detect_base_paths
 from deplar.scanner.config_scanner import ConfigScanner
+from deplar.scanner.endpoints import endpoint_key
+from deplar.scanner.fanout import compute_fanout
 from deplar.scanner.identity import extract_identities
 from deplar.scanner.network_detector import NetworkDetector
 from deplar.scanner.reconciler import AliasCatalog, Reconciler
@@ -68,6 +70,7 @@ class OrgScanner:
         self._symbols = SymbolExtractor()
         self.last_manifest: dict = {}
         self.last_match_stats = None
+        self.last_fanout: dict = {}
 
     def scan_repo(self, config: RepoConfig) -> List[DependencyEdge]:
         edges, _, _ = self.scan_repo_full(config)
@@ -103,6 +106,7 @@ class OrgScanner:
         all_edges: List[DependencyEdge] = []
         all_aliases: List[dict] = []
         route_index = RouteIndex()
+        repo_indexes: dict = {}   # repo -> SymbolIndex, for endpoint fan-out
         repo_names = [r.name for r in org_config.repos]
         now = dt.datetime.now(dt.timezone.utc).isoformat()
 
@@ -112,6 +116,7 @@ class OrgScanner:
             try:
                 edges, symbol_index, route_edges = self.scan_repo_full(repo)
                 all_edges.extend(edges)
+                repo_indexes[repo.name] = symbol_index
                 for r in route_edges:
                     route_index.add(repo.name, r)
                 identities = [a.as_dict()
@@ -135,6 +140,24 @@ class OrgScanner:
         self.last_match_stats = SurfaceMatcher().match(resolved, route_index)
         self.last_manifest = build_interface_manifest(
             repo_names, resolved, route_index)
+
+        # Endpoint fan-out: for each provided endpoint, the external calls its
+        # handler reaches through the intra-repo call graph (see fanout.py).
+        self.last_fanout = {}
+        for repo in repo_names:
+            idx = repo_indexes.get(repo)
+            if idx is None:
+                continue
+            out_edges = [e for e in resolved if e.from_repo == repo]
+            fo = compute_fanout(repo, idx.symbols, idx.calls,
+                                route_index.routes_for(repo), out_edges)
+            if not fo:
+                continue
+            self.last_fanout[repo] = fo
+            for p in self.last_manifest.get(repo, {}).get("provides", {}).get("http", []):
+                p["calls"] = fo.get(endpoint_key(p["method"], p["path"]), [])
+            if store is not None:
+                store.replace_route_calls(repo, fo)
 
         for edge in resolved:
             graph.add_dependency(edge)
