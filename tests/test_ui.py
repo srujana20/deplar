@@ -108,3 +108,14 @@ def test_ui_html_has_tabs_and_impact_links(tmp_path):
     # navigable impact links + impact section
     assert "function rlink(" in html and "function goRepo(" in html
     assert "Impact — if you change this" in html
+
+
+def test_ui_html_has_redesign_chrome(tmp_path):
+    html = render_html(build_ui_data(_surface_store(tmp_path)), served=False)
+    # branded logo chip, zoom controls, metric row, radial-gradient nodes
+    assert 'id="logo"' in html and "dependency map" in html
+    assert 'id="zin"' in html and 'id="zout"' in html and 'id="zfit"' in html
+    assert 'class="metric"' in html and "fan-out" in html and "blast" in html
+    assert "node-internal" in html and "node-external" in html
+    # gitnexus-style depth-grouped blast
+    assert "function blastDepths(" in html

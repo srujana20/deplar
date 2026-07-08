@@ -184,15 +184,16 @@ _TEMPLATE = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TITLE__</title>
 <style>
-  :root { color-scheme: light dark; --bg:#0d0f14; --bg2:#12151c; --panel:#161a22;
-          --panel2:#1c212b; --line:#272d39; --txt:#e8eaf0; --muted:#8b94a6;
-          --accent:#6ea8fe; --ext:#a97cf8;
-          --ok:#3ecf8e; --warn:#e0a03a; --bad:#f0736a;
-          --get:#3ecf8e; --post:#6ea8fe; --put:#e0a03a; --del:#f0736a; --any:#8b94a6; }
-  @media (prefers-color-scheme: light) {
-    :root { --bg:#f4f6f9; --bg2:#eef1f5; --panel:#fff; --panel2:#f7f9fc;
-            --line:#e3e6ea; --txt:#1c2129; --muted:#69707c; --accent:#2f6fed; }
-  }
+  :root { color-scheme: dark;
+    --bg:oklch(0.16 0.012 260); --bg2:oklch(0.19 0.014 260);
+    --panel:oklch(0.2 0.014 260); --panel2:oklch(0.26 0.016 260);
+    --line:oklch(0.3 0.016 260); --txt:oklch(0.93 0.008 250);
+    --muted:oklch(0.68 0.015 258); --accent:oklch(0.68 0.15 245);
+    --ext:oklch(0.78 0.14 75); --ok:oklch(0.75 0.16 155);
+    --warn:oklch(0.78 0.14 75); --bad:oklch(0.62 0.2 25);
+    --glow:oklch(0.68 0.15 245 / 0.35);
+    --get:var(--ok); --post:var(--accent); --put:var(--warn); --patch:var(--warn);
+    --del:var(--bad); --any:var(--muted); }
   * { box-sizing: border-box; }
   html,body { margin:0; height:100%; font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
               background:var(--bg); color:var(--txt); font-size:14px; }
@@ -201,33 +202,68 @@ _TEMPLATE = r"""<!doctype html>
            background:radial-gradient(circle at 30% 20%, var(--bg2), var(--bg) 70%); }
   svg { width:100%; height:100%; display:block; cursor:grab; }
   svg.panning { cursor:grabbing; }
-  .edge { stroke:var(--line); stroke-width:1.2; transition:stroke .15s; }
-  .edge.low { stroke-dasharray:4 3; opacity:.55; }
+  .edge { stroke:var(--edge,oklch(0.42 0.02 260)); stroke-width:1.2; opacity:.85;
+          transition:stroke .2s, opacity .2s; }
+  .edge.low { stroke-dasharray:5 4; opacity:.5; }
   .edge.hi { stroke-width:2; }
   .edge.hot { stroke:var(--accent); stroke-width:2.4; opacity:1; }
-  .node circle { stroke:var(--bg); stroke-width:2.5; cursor:pointer; transition:filter .15s; }
-  .node.repo circle { fill:var(--accent); }
-  .node.ext circle { fill:var(--ext); }
-  .node.dim { opacity:.12; }
-  .node.sel circle { stroke:#fff; stroke-width:3; filter:drop-shadow(0 0 6px var(--accent)); }
+  .node .core { stroke:var(--bg); stroke-width:2.5; cursor:pointer; }
+  .node.repo .core { fill:url(#node-internal); }
+  .node.ext .core { fill:url(#node-external); }
+  .node .ring { display:none; fill:none; stroke:var(--accent); stroke-width:1.5; opacity:.55; }
+  .node.sel .ring { display:inline; }
+  .node.sel .core { filter:drop-shadow(0 0 7px var(--glow)); }
+  .node { opacity:1; transition:opacity .2s; }
+  .node.dim { opacity:.14; }
   .node text { fill:var(--txt); font-size:11px; font-weight:500; pointer-events:none;
                paint-order:stroke; stroke:var(--bg); stroke-width:3px; }
+  .node.ext text { font-weight:400; }
   #bar { position:absolute; top:60px; left:14px; right:14px; display:flex; gap:9px;
          align-items:center; flex-wrap:wrap; z-index:5; }
-  #bar input[type=search]{ padding:8px 12px; border-radius:9px; border:1px solid var(--line);
-         background:var(--panel); color:var(--txt); min-width:210px; outline:none; }
-  #bar input[type=search]:focus{ border-color:var(--accent); }
-  .pill { background:var(--panel); border:1px solid var(--line); border-radius:9px;
-          padding:7px 11px; font-size:12px; color:var(--muted); display:flex;
-          gap:8px; align-items:center; box-shadow:0 1px 3px rgba(0,0,0,.15); }
-  button { background:var(--accent); color:#fff; border:0; border-radius:9px;
-           padding:8px 13px; font-size:12px; font-weight:600; cursor:pointer; }
+  /* frosted card surface shared by the toolbar controls */
+  .pill { background:color-mix(in oklch, var(--panel) 82%, transparent);
+          border:1px solid var(--line); border-radius:12px; padding:8px 12px;
+          font-size:12px; color:var(--muted); display:flex; gap:8px;
+          align-items:center; backdrop-filter:blur(10px); }
+  .searchbox { position:relative; display:flex; align-items:center; }
+  .searchbox svg { position:absolute; left:11px; width:15px; height:15px;
+          color:var(--muted); pointer-events:none; }
+  #bar input[type=search]{ padding:9px 12px 9px 32px; border-radius:12px;
+          border:1px solid var(--line); background:color-mix(in oklch, var(--panel) 82%, transparent);
+          color:var(--txt); min-width:200px; outline:none; backdrop-filter:blur(10px); }
+  #bar input[type=search]:focus{ border-color:var(--accent);
+          box-shadow:0 0 0 3px color-mix(in oklch, var(--accent) 25%, transparent); }
+  #bar select{ background:transparent; border:0; color:var(--txt); font-size:12px; outline:none; }
+  button { background:var(--accent); color:var(--bg); border:0; border-radius:12px;
+           padding:8px 13px; font-size:12px; font-weight:600; cursor:pointer;
+           display:flex; align-items:center; gap:6px; }
   button:hover { filter:brightness(1.08); }
-  button.ghost { background:var(--panel); color:var(--txt); border:1px solid var(--line); }
+  button svg { width:15px; height:15px; }
+  button.ghost { background:color-mix(in oklch, var(--panel) 82%, transparent);
+           color:var(--muted); border:1px solid var(--line); backdrop-filter:blur(10px); }
+  button.ghost:hover { color:var(--txt); filter:none; }
+  /* branded logo chip */
+  #logo { display:flex; align-items:center; gap:9px; }
+  #logo .mark { width:24px; height:24px; border-radius:8px; display:flex;
+          align-items:center; justify-content:center;
+          background:color-mix(in oklch, var(--accent) 16%, transparent);
+          color:var(--accent); box-shadow:inset 0 0 0 1px color-mix(in oklch, var(--accent) 30%, transparent); }
+  #logo .mark svg{ width:15px; height:15px; }
+  #logo b { font-size:14px; letter-spacing:-.01em; color:var(--txt); }
+  #logo span { font-size:12px; color:var(--muted); }
+  /* zoom controls (bottom-right) */
+  #zoom { position:absolute; bottom:16px; right:16px; z-index:5; display:flex;
+          flex-direction:column; background:color-mix(in oklch, var(--panel) 82%, transparent);
+          border:1px solid var(--line); border-radius:12px; overflow:hidden; backdrop-filter:blur(10px); }
+  #zoom button { background:transparent; color:var(--muted); border:0; border-radius:0;
+          width:38px; height:36px; justify-content:center; }
+  #zoom button:hover { background:var(--panel2); color:var(--txt); filter:none; }
+  #zoom button + button { border-top:1px solid var(--line); }
   #side { width:392px; background:var(--panel); border-left:1px solid var(--line);
-          padding:20px 20px 40px; overflow:auto; }
-  #side h2 { font-size:18px; margin:0 0 3px; display:flex; align-items:center; gap:8px; }
-  #side .sub { color:var(--muted); font-size:12.5px; margin-bottom:8px; }
+          padding:0; overflow:auto; }
+  #hint { padding:40px 32px; text-align:center; }
+  .insp-body { padding:4px 20px 40px; }
+  #side .sub { color:var(--muted); font-size:12px; }
   #side h3 { font-size:11px; text-transform:uppercase; letter-spacing:.05em;
              color:var(--muted); margin:20px 0 8px; display:flex; gap:7px; align-items:center; }
   #side h3 .n { background:var(--panel2); border:1px solid var(--line); border-radius:20px;
@@ -269,20 +305,49 @@ _TEMPLATE = r"""<!doctype html>
   .legend span { display:flex; align-items:center; gap:5px; }
   .swatch { width:9px; height:9px; border-radius:50%; }
   .sym-toggle { cursor:pointer; color:var(--accent); font-size:12px; user-select:none; }
+  /* inspector header + metric row (fan-out / fan-in / blast) */
+  .insp-head { display:flex; align-items:flex-start; justify-content:space-between;
+          gap:10px; padding:18px 20px 16px; border-bottom:1px solid var(--line); }
+  .insp-title { display:flex; align-items:center; gap:8px; min-width:0; }
+  .insp-title .hdot { width:10px; height:10px; border-radius:50%; flex:none; }
+  .insp-title h2 { font-family:ui-monospace,monospace; font-size:16px; font-weight:600;
+          margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .iconbtn { background:transparent; border:0; color:var(--muted); cursor:pointer;
+          border-radius:8px; padding:5px; display:flex; }
+  .iconbtn:hover { background:var(--panel2); color:var(--txt); filter:none; }
+  .iconbtn.ok { color:var(--ok); }
+  .iconbtn svg{ width:15px; height:15px; }
+  .metrics { display:grid; grid-template-columns:repeat(3,1fr);
+          border-bottom:1px solid var(--line); }
+  .metric { display:flex; flex-direction:column; align-items:center; gap:2px; padding:12px 0; }
+  .metric + .metric { border-left:1px solid var(--line); }
+  .metric .v { font-family:ui-monospace,monospace; font-size:22px; font-weight:600;
+          font-variant-numeric:tabular-nums; }
+  .metric .l { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  .confb { font-family:ui-monospace,monospace; font-size:10px; font-weight:600;
+          padding:1px 6px; border-radius:6px; }
+  .confb.hi { color:var(--ok); background:color-mix(in oklch, var(--ok) 15%, transparent); }
+  .confb.lo { color:var(--warn); background:color-mix(in oklch, var(--warn) 15%, transparent); }
+  .navrow { display:flex; align-items:center; gap:8px; width:100%; text-align:left;
+          background:transparent; border:0; color:var(--txt); border-radius:9px;
+          padding:6px 8px; cursor:pointer; font-size:12px; }
+  .navrow:hover { background:var(--panel2); filter:none; }
+  .navrow code, .navrow .nm { font-family:ui-monospace,monospace; font-size:12px; color:var(--txt); }
+  .navrow .r { margin-left:auto; display:flex; align-items:center; gap:6px; }
   /* view tabs */
-  #tabs { position:absolute; top:14px; left:14px; z-index:6; display:flex; gap:4px;
-          background:var(--panel); border:1px solid var(--line); border-radius:10px;
-          padding:4px; box-shadow:0 2px 8px rgba(0,0,0,.2); }
-  .tab { padding:6px 14px; border-radius:7px; font-size:12.5px; font-weight:600;
+  #tabs { position:absolute; top:14px; right:410px; z-index:6; display:flex; gap:4px;
+          background:color-mix(in oklch, var(--panel) 82%, transparent);
+          border:1px solid var(--line); border-radius:12px; padding:4px; backdrop-filter:blur(10px); }
+  .tab { padding:6px 14px; border-radius:9px; font-size:12.5px; font-weight:600;
          color:var(--muted); cursor:pointer; border:0; background:transparent; }
-  .tab.active { background:var(--accent); color:#fff; }
+  .tab:hover { color:var(--txt); filter:none; }
+  .tab.active { background:var(--accent); color:var(--bg); }
   #repopick { display:none; }
-  #repopick select { padding:7px 10px; border-radius:9px; border:1px solid var(--line);
-         background:var(--panel); color:var(--txt); font-size:12px; }
   /* clickable repo links in the panel */
   .rlink { color:var(--accent); cursor:pointer; text-decoration:none; }
   .rlink:hover { text-decoration:underline; }
-  .impact { background:rgba(240,115,106,.08); border:1px solid rgba(240,115,106,.3);
+  .impact { background:color-mix(in oklch, var(--bad) 8%, transparent);
+            border:1px solid color-mix(in oklch, var(--bad) 30%, transparent);
             border-radius:11px; padding:10px 12px; margin-top:4px; }
   .impact .lvl { font-size:11px; color:var(--muted); margin:6px 0 3px; }
 </style>
@@ -295,20 +360,29 @@ _TEMPLATE = r"""<!doctype html>
       <button class="tab" data-mode="repo">Single repo</button>
     </div>
     <div id="bar">
-      <span id="repopick" class="pill">repo
-        <select id="reposel"></select>
+      <span class="pill" id="logo">
+        <span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M12 7.5v4M12 11.5l-5 5M12 11.5l5 5"/></svg></span>
+        <b>deplar</b><span>dependency map</span>
       </span>
-      <input id="search" type="search" placeholder="Search repos…">
+      <span id="repopick" class="pill">repo <select id="reposel"></select></span>
+      <span class="searchbox">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="search" type="search" placeholder="Search services…">
+      </span>
       <label class="pill">min conf
         <input id="conf" type="range" min="0" max="100" value="0"> <span id="confv">0%</span>
       </label>
       <label class="pill"><input id="hideext" type="checkbox"> hide external</label>
       <label class="pill"><input id="showimports" type="checkbox"> show imports</label>
-      <button class="ghost" id="fit">Fit</button>
       <button id="reconcile" style="display:none">Reconcile</button>
       <span class="pill" id="stat"></span>
     </div>
     <svg id="svg"></svg>
+    <div id="zoom">
+      <button id="zin" title="Zoom in" aria-label="Zoom in"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+      <button id="zout" title="Zoom out" aria-label="Zoom out"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
+      <button id="zfit" title="Fit to screen" aria-label="Fit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
+    </div>
     <div class="legend">
       <span><i class="swatch" style="background:var(--accent)"></i>service</span>
       <span><i class="swatch" style="background:var(--ext)"></i>external</span>
@@ -317,9 +391,16 @@ _TEMPLATE = r"""<!doctype html>
     </div>
   </div>
   <div id="side">
-    <div class="empty" id="hint">Click a service to inspect the API it
-      <b>provides</b>, the endpoints it <b>calls</b> on others, who <b>calls it</b>,
-      and its blast radius.</div>
+    <div id="hint">
+      <div style="width:48px;height:48px;margin:0 auto 14px;border-radius:14px;
+           display:flex;align-items:center;justify-content:center;
+           background:var(--panel2);border:1px solid var(--line);color:var(--muted)">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M12 7.5v4M12 11.5l-5 5M12 11.5l5 5"/></svg>
+      </div>
+      <p style="color:var(--muted);font-size:13px;max-width:240px;margin:0 auto;line-height:1.5">
+        Click a service to inspect the API it <b>provides</b>, the endpoints it
+        <b>calls</b>, who <b>calls it</b>, and its blast radius.</p>
+    </div>
     <div id="detail" style="display:none"></div>
   </div>
 </div>
@@ -398,8 +479,18 @@ function runLayout(){
 
 /* --- render --- */
 let edgeEls=[], nodeEls={};
+const DEFS = `<defs>
+  <radialGradient id="node-internal" cx="35%" cy="30%">
+    <stop offset="0%" stop-color="oklch(0.82 0.11 245)"/>
+    <stop offset="100%" stop-color="oklch(0.68 0.15 245)"/>
+  </radialGradient>
+  <radialGradient id="node-external" cx="35%" cy="30%">
+    <stop offset="0%" stop-color="oklch(0.88 0.1 75)"/>
+    <stop offset="100%" stop-color="oklch(0.78 0.14 75)"/>
+  </radialGradient>
+</defs>`;
 function render(){
-  svg.innerHTML="";
+  svg.innerHTML=DEFS;
   edgeEls=[]; nodeEls={};
   EDGES.forEach(e=>{
     const ln=document.createElementNS(SVGNS,"line");
@@ -409,11 +500,13 @@ function render(){
   NODES.forEach(n=>{
     const g=document.createElementNS(SVGNS,"g");
     g.setAttribute("class","node "+(n.external?"ext":"repo"));
+    const ring=document.createElementNS(SVGNS,"circle");
+    ring.setAttribute("class","ring"); ring.setAttribute("r", n.r+4);
     const c=document.createElementNS(SVGNS,"circle");
-    c.setAttribute("r", n.r);
+    c.setAttribute("class","core"); c.setAttribute("r", n.r);
     const t=document.createElementNS(SVGNS,"text");
-    t.setAttribute("x", n.r+3); t.setAttribute("y", 4); t.textContent=n.id;
-    g.appendChild(c); g.appendChild(t); svg.appendChild(g);
+    t.setAttribute("x", n.r+4); t.setAttribute("y", 4); t.textContent=n.id;
+    g.appendChild(ring); g.appendChild(c); g.appendChild(t); svg.appendChild(g);
     g.addEventListener("mousedown", ev=>startDrag(ev,n));
     g.addEventListener("click", ev=>{ ev.stopPropagation(); selectNode(n); });
     nodeEls[n.id]=g;
@@ -529,7 +622,15 @@ function setMode(mode){
 document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click",()=>setMode(t.dataset.mode)));
 reposel.addEventListener("change",()=>{ focusRepo=reposel.value;
   applyFilters(); if(byId[focusRepo]) selectNode(byId[focusRepo]); fit(); });
-document.getElementById("fit").addEventListener("click",fit);
+/* --- zoom controls (bottom-right) --- */
+function zoomBy(factor){
+  const cx=view.x+view.w/2, cy=view.y+view.h/2;
+  view.w*=factor; view.h*=factor;
+  view.x=cx-view.w/2; view.y=cy-view.h/2; setView();
+}
+document.getElementById("zin").addEventListener("click",()=>zoomBy(0.8));
+document.getElementById("zout").addEventListener("click",()=>zoomBy(1.25));
+document.getElementById("zfit").addEventListener("click",fit);
 document.getElementById("reconcile").addEventListener("click",async()=>{
   const s=await (await fetch("api/reconcile",{method:"POST"})).json();
   await boot();
@@ -542,6 +643,12 @@ function blast(id){ const seen=new Set(); let front=[id];
   while(front.length){ const nx=[]; front.forEach(f=>(adjIn[f]||[]).forEach(p=>{
     if(!seen.has(p)&&p!==id){seen.add(p);nx.push(p);} })); front=nx; }
   return [...seen]; }
+/* upstream dependents grouped by hop distance (GitNexus-style depth grouping) */
+function blastDepths(id){ const depth={}, seen=new Set([id]); let front=[id], d=0;
+  while(front.length){ d++; const nx=[];
+    front.forEach(f=>(adjIn[f]||[]).forEach(p=>{
+      if(!seen.has(p)){ seen.add(p); depth[p]=d; nx.push(p); } })); front=nx; }
+  return depth; }
 function clearSelect(){ selected=null;
   document.getElementById("detail").style.display="none";
   document.getElementById("hint").style.display="";
@@ -557,10 +664,11 @@ function epRow(method, path, matched, note){
   return `<div class="ep">${verbBadge(method)}<code>${esc(path||'/')}</code>${dot}${note?`<span class="mini">${esc(note)}</span>`:''}</div>`;
 }
 /* group: a peer repo + the endpoints exchanged with it. titleHtml is trusted HTML. */
+function confBadge(c){ return c==null?'':
+  `<span class="confb ${c>=0.8?'hi':'lo'}">${Math.round(c*100)}%</span>`; }
 function group(titleHtml, tag, conf, rowsHtml){
-  const c = conf==null?'':`<span class="${conf>=0.8?'conf-hi':'conf-lo'}">${Math.round(conf*100)}%</span>`;
   return `<div class="grp"><div class="grp-h"><b>${titleHtml}</b>
-    <span style="display:flex;gap:6px;align-items:center">${tag}${c}</span></div>
+    <span style="display:flex;gap:6px;align-items:center">${tag}${confBadge(conf)}</span></div>
     ${rowsHtml?`<div class="grp-eps">${rowsHtml}</div>`:''}</div>`;
 }
 /* a clickable link to another service — the core "impact link" for navigation */
@@ -611,33 +719,64 @@ function selectNode(n){
       `<span class="tag">${e.types.join(', ')}</span>`, e.confidence, rows);
   }).join('') : empty;
 
-  // Impact — who must be coordinated if this service changes
-  const direct = ins.map(e=>e.source);
-  const transitive = br.filter(r=>!direct.includes(r));
-  const impactHtml = (direct.length||transitive.length) ? `<div class="impact">
-      <div class="lvl">Directly affected — must update together</div>
-      ${direct.length?direct.map(r=>`<div class="ep">⚠ ${rlink(r)}</div>`).join(''):'<div class="empty">none</div>'}
-      ${transitive.length?`<div class="lvl">Transitive blast radius</div>`+
-        transitive.map(r=>`<div class="ep">↳ ${rlink(r)}</div>`).join(''):''}
+  // Impact — who must be coordinated if this service changes (grouped by hop depth)
+  const depth = blastDepths(n.id);
+  const byDepth = {};
+  Object.keys(depth).forEach(r=>{ (byDepth[depth[r]]=byDepth[depth[r]]||[]).push(r); });
+  const direct = (byDepth[1]||[]);
+  const levels = Object.keys(byDepth).map(Number).sort((a,b)=>a-b);
+  const impactHtml = levels.length ? `<div class="impact">
+      ${levels.map(lv=>`
+        <div class="lvl">${lv===1?'Directly affected — must update together'
+                                 :'Hop '+lv+' — transitive blast radius'}</div>
+        ${byDepth[lv].map(r=>`<div class="ep">${lv===1?'⚠':'↳'} ${rlink(r)}</div>`).join('')}
+      `).join('')}
       <div class="cmd">deplar impact ${esc(n.id)}</div>
     </div>` : '<div class="empty">nothing depends on this — safe to change in isolation</div>';
 
   const aliasesHtml = (n.aliases||[]).length
-    ? n.aliases.map(a=>`<span class="tag" title="${esc(a.raw)}">${esc(a.alias)} · ${esc(a.source)}</span>`).join(' ')
-    : '<span class="empty">none</span>';
+    ? n.aliases.map(a=>`<div class="navrow" style="cursor:default">
+        <code>${esc(a.alias)}</code><span class="r"><span class="tag">${esc(a.source)}</span></span></div>`).join('')
+    : '<div class="empty">none</div>';
+
+  const blastTone = br.length>=4?'var(--bad)':br.length>=1?'var(--warn)':'var(--ok)';
+  const dotColor = n.external?'var(--ext)':'var(--accent)';
+  const langTags = (!n.external && (n.languages||[]).length)
+    ? `<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:8px">${
+        n.languages.map(l=>`<span class="tag">${esc(l)}</span>`).join('')}</div>` : '';
+  const cmd = `deplar workspace ${n.id} --out ./workspace`;
 
   d.innerHTML = `
-    <h2>${esc(n.id)} ${n.external?'<span class="tag ext">external</span>':''}</h2>
-    <div class="sub">${n.external?'unresolved / external dependency':
-        (n.languages.join(', ')||'—')} · <b>${outs.length}</b> out · <b>${ins.length}</b> in</div>
-    ${n.external?'':`<div style="margin-top:6px">${aliasesHtml}</div>
+    <div class="insp-head">
+      <div style="min-width:0">
+        <div class="insp-title">
+          <span class="hdot" style="background:${dotColor}"></span>
+          <h2>${esc(n.id)}</h2>
+          ${n.external?'<span class="tag ext">external</span>':''}
+        </div>
+        <div class="sub" style="margin-top:4px">${n.external?'unresolved / external dependency':
+            (n.path?esc(n.path):(n.languages.join(', ')||'—'))}</div>
+        ${langTags}
+      </div>
+      <button class="iconbtn" id="inspclose" title="Close" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="metrics">
+      <div class="metric"><span class="v">${outs.length}</span><span class="l">fan-out</span></div>
+      <div class="metric"><span class="v">${ins.length}</span><span class="l">fan-in</span></div>
+      <div class="metric"><span class="v" style="color:${blastTone}">${br.length}</span><span class="l">blast</span></div>
+    </div>
+    <div class="insp-body">
+    ${n.external?'':`<h3>Aliases <span class="n">${(n.aliases||[]).length}</span></h3>
+    <div>${aliasesHtml}</div>
     <h3>Provides — API endpoints <span class="n">${provides.length}</span></h3>
     <div>${provHtml}</div>`}
     <h3>Calls <span class="n">${outs.length}</span></h3>
     <div>${callsHtml}</div>
     <h3>Called by <span class="n">${ins.length}</span></h3>
     <div>${calledHtml}</div>
-    <h3>Impact — if you change this <span class="n">${direct.length + transitive.length}</span></h3>
+    <h3>Impact — if you change this <span class="n">${Object.keys(depth).length}</span></h3>
     ${impactHtml}
     ${n.external?'':`<h3>Code symbols <span class="n">${n.symbols.length}</span>
       <span class="sym-toggle" id="symtog">show</span></h3>
@@ -645,11 +784,20 @@ function selectNode(n){
         `<div class="ep"><code>${esc(s.signature||s.name)}</code></div>
          <div class="mini" style="margin:-2px 0 4px 4px">${esc(s.kind)} · ${esc(s.file)}:${s.line}</div>`).join(''):empty}</div>
     <h3>Coordinated workspace</h3>
-    <div class="cmd">deplar workspace ${esc(n.id)} --out ./workspace</div>`}
+    <div class="cmd" style="display:flex;align-items:center;gap:8px">
+      <code style="flex:1">${esc(cmd)}</code>
+      <button class="iconbtn" id="copycmd" title="Copy command" aria-label="Copy" data-cmd="${esc(cmd)}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+      </button></div>`}
+    </div>
   `;
   const tog=document.getElementById("symtog");
   if(tog) tog.onclick=()=>{ const b=document.getElementById("symbox");
     const on=b.style.display==="none"; b.style.display=on?"":"none"; tog.textContent=on?"hide":"show"; };
+  const cl=document.getElementById("inspclose"); if(cl) cl.onclick=clearSelect;
+  const cp=document.getElementById("copycmd");
+  if(cp) cp.onclick=()=>{ try{ navigator.clipboard.writeText(cp.dataset.cmd); cp.classList.add("ok");
+    setTimeout(()=>cp.classList.remove("ok"),1200);}catch(e){} };
 
   const near=new Set([n.id, ...outs.map(e=>e.target), ...ins.map(e=>e.source)]);
   NODES.forEach(x=>{ const g=nodeEls[x.id];
